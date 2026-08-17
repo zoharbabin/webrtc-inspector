@@ -1,57 +1,17 @@
 // WebRTC Inspector — framework-agnostic WebRTC instrumentation core.
-// Works as a plain <script> tag, a Playwright page.addInitScript, a paste into
-// DevTools console, or a MAIN-world MV3 content script. No dependencies.
+// Usage and full API reference: see README.md. No dependencies.
 //
 // Patches RTCPeerConnection (+ transceivers/senders), RTCDataChannel,
 // setLocalDescription/setRemoteDescription, ICE candidate exchange,
-// getUserMedia/getDisplayMedia, and WebSocket at the prototype level so every
-// connection created after this script runs is tracked, regardless of which
-// framework/SDK creates it. Must run before the page's own scripts grab
-// references to the unpatched globals.
+// getUserMedia/getDisplayMedia, and WebSocket at the prototype level. Must
+// run before the page's own scripts grab references to the unpatched globals.
 //
-// Track lifecycle is tracked via both the 'ended'/'mute'/'unmute' events and a
-// MediaStreamTrack.prototype.stop() patch, since the spec does not fire the
-// 'ended' event for an explicit stop() call by the page's own script.
+// MediaStreamTrack.prototype.stop is patched directly because the spec
+// doesn't fire 'ended' for a self-initiated stop().
 //
-// WebSocket is patched too, not just RTCPeerConnection/RTCDataChannel: some
-// SFU-based transports (mediasoup-client is one confirmed example) relay
-// their application-level control-plane messages (transcripts, turn-state,
-// tool calls — an "app-message" layer) over a signaling WebSocket rather
-// than a literal RTCDataChannel, so a page that only patches the WebRTC data
-// primitives sees zero data channels while real control traffic is flowing.
-// Patching WebSocket closes that gap generically, for any vendor's signaling
-// channel.
-//
-// Known limitation: this instruments the standard WebRTC + WebSocket API
-// surface. An SDK that ships its own bundled WebRTC/networking implementation
-// (rare, but some embedded/native wrappers do), that uses a transport this
-// module doesn't patch (raw TCP/UDP via a native bridge, WebTransport, SSE),
-// or that already holds a reference to the unpatched globals before this
-// script runs will not be visible.
-//
-// Public API: window.__webrtcInspector
-//   .getSnapshot()                                     -> serializable state for a UI/logger
-//   .getSdp(connectionId)                               -> {local, remote} full SDP strings for one connection
-//   .setFakeMic(base64OrArrayBuffer)                    -> route future getUserMedia audio requests to a synthetic source
-//   .clearFakeMic()                                     -> restore real microphone capture
-//   .injectAudio(base64OrArrayBuffer)                   -> setFakeMic + immediately play it once
-//   .playIntoFakeMic()                                  -> replay the already-armed fake-mic buffer
-//   .getFakeMicTrack()                                  -> a fresh cloned MediaStreamTrack from the fake-mic source, for manual replaceTrack() calls
-//   .setFakeCam({width, height, color, text, fps})       -> route future getUserMedia video requests to a synthetic canvas-based source
-//   .clearFakeCam()                                      -> restore real camera capture
-//   .getRemoteTrackStream(connectionId, trackId)         -> a live MediaStream wrapping one remote track, for recording/playback/analysis
-//   .replaceOutgoingTrack(connectionId, kind, track)     -> swap a sender's outgoing track on a specific connection
-//   .injectDataChannelMessage(connectionId, label, data) -> send on a specific data channel
-//   .setDataChannelInterceptor(fn)                       -> fn(direction, {connectionId, label, data}) => newData | false to block; called before every send/deliver
-//   .clearDataChannelInterceptor()                       -> remove the interceptor
-//   .setWebSocketInterceptor(fn)                         -> fn(direction, {socketId, url, data}) => newData | false to block; called before every send/deliver on every tracked WebSocket
-//   .clearWebSocketInterceptor()                         -> remove the interceptor
-//   .injectWebSocketMessage(socketId, data)              -> dispatch a synthetic incoming 'message' event on a tracked socket, as if the server sent it (does not touch the real network)
-//   .sendOnWebSocket(socketId, data)                     -> send an outgoing message on a tracked socket through the real send(), as if the app itself called ws.send() (counted/logged/intercepted like any other send)
-//   .killConnection(connectionId)                        -> real pc.close() on a tracked RTCPeerConnection — genuine, immediate transport death (ICE/DTLS torn down for real), for testing whether a client detects loss and reconnects from scratch. Not a simulation of transient packet loss (page JS cannot force that on already-flowing WebRTC UDP media in any browser); this tests abrupt-death recovery instead, which is the closest real, OS-access-free, vendor-generic proxy available.
-//   .simulateNetworkLoss(durationMs, options)            -> real (not synthetic) outage of the signaling/control plane: for durationMs, every WebSocket send and every data-channel send/receive is actually dropped (silently discarded, not delivered) rather than faked, then automatically restored. options: {targets: ['websocket','datachannel']} (default both). Composes with any interceptor already installed via setDataChannelInterceptor/setWebSocketInterceptor (restores it afterward instead of clobbering it). Returns {stop} to end early, and a promise that resolves once restored. Does not touch already-flowing RTP media — pair with killConnection to also exercise media-transport death.
-//   .onEvent(callback)                                   -> subscribe to live event log entries
-//   .clearLog()                                          -> drop accumulated log/stats history
+// WebSocket is patched too (not just RTCPeerConnection/RTCDataChannel)
+// because some SFU transports (e.g. mediasoup-client) route control-plane
+// messages over a signaling WebSocket instead of a literal RTCDataChannel.
 
 (function () {
   if (window.__webrtcInspector) return;
