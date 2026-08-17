@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 12px -apple-system, sans-serif; margin: 8px; color: #ddd; background: #1e1e1e; }
+  h2 { font-size: 13px; margin: 12px 0 4px; color: #9cdcfe; }
+  .conn { border: 1px solid #444; border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; }
+  .conn.closed { opacity: 0.5; }
+  .row { display: flex; gap: 8px; }
+  .row > div { flex: 1; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  td, th { border-bottom: 1px solid #333; padding: 2px 4px; text-align: left; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; background: #333; }
+  .badge.connected { background: #1e5b1e; }
+  .badge.failed, .badge.closed { background: #5b1e1e; }
+  input, textarea, button { background: #2d2d2d; color: #ddd; border: 1px solid #555; border-radius: 3px; padding: 3px 5px; }
+  button { cursor: pointer; }
+  button:hover { background: #3d3d3d; }
+  #controls { border-top: 1px solid #444; padding-top: 8px; margin-top: 8px; }
+  .field { margin-bottom: 4px; }
+  label { display: inline-block; width: 90px; font-size: 11px; color: #aaa; }
+  #status { color: #888; font-size: 11px; }
+</style>
+</head>
+<body>
+  <div id="status">connecting…</div>
+  <div id="connections"></div>
+  <h2>WebSockets</h2>
+  <div id="websockets"></div>
+
+  <div id="controls">
+    <h2>Inject audio into fake mic</h2>
+    <div class="field"><label>base64 audio</label><input id="audioB64" style="width: 60%" placeholder="base64-encoded WAV/MP3"></div>
+    <button id="injectAudioBtn">Set + Play</button>
+    <button id="replayBtn">Replay last</button>
+
+    <h2>Send data-channel message</h2>
+    <div class="field"><label>connection id</label><input id="dcConnId" style="width: 60px" type="number"></div>
+    <div class="field"><label>channel label</label><input id="dcLabel" style="width: 150px"></div>
+    <div class="field"><label>message</label><input id="dcMessage" style="width: 60%"></div>
+    <button id="sendDcBtn">Send</button>
+
+    <h2>Replace outgoing track</h2>
+    <div class="field"><label>connection id</label><input id="rtConnId" style="width: 60px" type="number"></div>
+    <div class="field"><label>kind</label>
+      <select id="rtKind"><option value="audio">audio</option><option value="video">video</option></select>
+    </div>
+    <button id="replaceTrackBtn">Replace with current fake-mic track</button>
+
+    <h2>Fake camera</h2>
+    <div class="field"><label>width x height</label><input id="camW" style="width: 50px" type="number" value="320"> x <input id="camH" style="width: 50px" type="number" value="240"></div>
+    <div class="field"><label>text</label><input id="camText" style="width: 150px" value="webrtc-inspector"></div>
+    <button id="setFakeCamBtn">Set fake camera</button>
+    <button id="clearFakeCamBtn">Clear (restore real camera)</button>
+
+    <h2>Data-channel interceptor</h2>
+    <div class="field"><label>direction</label>
+      <select id="icDir"><option value="out">outgoing</option><option value="in">incoming</option><option value="">both</option></select>
+    </div>
+    <div class="field"><label>action</label>
+      <select id="icAction"><option value="uppercase">uppercase text</option><option value="block">block</option></select>
+    </div>
+    <button id="setInterceptorBtn">Install</button>
+    <button id="clearInterceptorBtn">Remove</button>
+    <div id="interceptorStatus" style="color: #888; font-size: 11px; margin-top: 4px;"></div>
+
+    <h2>Send WebSocket message</h2>
+    <div class="field"><label>socket id</label><input id="wsSocketId" style="width: 60px" type="number"></div>
+    <div class="field"><label>message</label><input id="wsMessage" style="width: 60%"></div>
+    <button id="sendWsBtn">Send</button>
+    <button id="injectWsBtn">Inject as incoming</button>
+
+    <h2>WebSocket interceptor</h2>
+    <div class="field"><label>direction</label>
+      <select id="wsIcDir"><option value="out">outgoing</option><option value="in">incoming</option><option value="">both</option></select>
+    </div>
+    <div class="field"><label>action</label>
+      <select id="wsIcAction"><option value="uppercase">uppercase text</option><option value="block">block</option></select>
+    </div>
+    <button id="setWsInterceptorBtn">Install</button>
+    <button id="clearWsInterceptorBtn">Remove</button>
+    <div id="wsInterceptorStatus" style="color: #888; font-size: 11px; margin-top: 4px;"></div>
+
+    <h2>Network-loss / reconnect testing</h2>
+    <div class="field"><label>connection id</label><input id="killConnId" style="width: 60px" type="number"></div>
+    <button id="killConnBtn">Kill connection (real pc.close())</button>
+    <div class="field"><label>duration (ms)</label><input id="lossDuration" style="width: 80px" type="number" value="15000"></div>
+    <div class="field"><label>targets</label>
+      <select id="lossTargets"><option value="both">websocket + datachannel</option><option value="websocket">websocket only</option><option value="datachannel">datachannel only</option></select>
+    </div>
+    <button id="simulateLossBtn">Simulate signaling outage</button>
+    <button id="stopLossBtn">Restore now</button>
+    <div id="lossStatus" style="color: #888; font-size: 11px; margin-top: 4px;"></div>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>

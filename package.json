@@ -1,0 +1,31 @@
+{
+  "name": "webrtc-inspector",
+  "version": "1.4.0",
+  "description": "Framework-agnostic live WebRTC inspection and fault injection: peer connections, tracks, data channels, WebSockets, fake mic/camera, and real transport/signaling fault injection for reconnect testing.",
+  "main": "core/webrtc-inspector.js",
+  "files": [
+    "core",
+    "extension",
+    "test",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "webrtc",
+    "devtools",
+    "chrome-extension",
+    "testing",
+    "debugging",
+    "instrumentation"
+  ],
+  "author": "Zohar Babin",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zoharbabin/webrtc-inspector.git"
+  },
+  "homepage": "https://github.com/zoharbabin/webrtc-inspector#readme",
+  "bugs": {
+    "url": "https://github.com/zoharbabin/webrtc-inspector/issues"
+  }
+}

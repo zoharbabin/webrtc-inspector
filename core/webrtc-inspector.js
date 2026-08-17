@@ -1,0 +1,1 @@
+../extension/core/webrtc-inspector.js
