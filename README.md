@@ -66,15 +66,7 @@ Every track from patched `getUserMedia`/`getDisplayMedia` is tagged (`fake-mic`/
 
 ## Roadmap
 
-Generic capabilities only — vendor-specific knowledge belongs in a consumer, not here.
-
-- **HTTP/`fetch` signaling instrumentation** — WHEP and similar SDP-over-HTTP signaling isn't patched; invisible to `getSnapshot()` and immune to `simulateNetworkLoss`. Needs a `fetch`/XHR patch + an `'http'` target.
-- **Connection/socket labeler API** — `setLabeler(fn)`: URL/hostname pattern → friendly name, so a consumer can label connections without this tool knowing vendor specifics.
-- **Message-decoder plugin API** — `registerDecoder(matcher, decodeFn)`: consumer-supplied protocol decoding for a readable event timeline instead of raw previews.
-- **Diagnostic-bundle export** — `exportBundle()`: snapshot + event log + stats history in one portable object.
-- **Capture-replay/diff engine** — record a session's event stream to JSON, diff against a prior capture, for regression fixtures.
-- **Extension plugin/adapter architecture** — let `extension/` load a per-site adapter (labelers + decoders) instead of requiring a fork.
-- **npm packaging** — real versioned package instead of symlink/path-only consumption.
+Tracked as issues: https://github.com/zoharbabin/webrtc-inspector/issues
 
 ## Testing
 
