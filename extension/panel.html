@@ -21,7 +21,13 @@
     --badge-bg: #e0e0e0; --badge-connected-bg: #c8e6c9; --badge-failed-bg: #f8d7da;
     --input-bg: #f0f0f0; --input-border: #bbb; --button-hover-bg: #e8e8e8;
   }
-  body { font: 12px -apple-system, sans-serif; margin: 8px; color: var(--fg); background: var(--bg); }
+  /* #35 — dockable/pop-out: border-box sizing + overflow-wrap keep dense
+     tabular data (SDP/stats, long URLs) from forcing horizontal scrollbars
+     when docked at Chrome DevTools' narrowest width (~300px), without
+     needing separate narrow/wide layout rules — the same flex-based markup
+     already adapts up to a wide undocked window. */
+  *, *::before, *::after { box-sizing: border-box; }
+  body { font: 12px -apple-system, sans-serif; margin: 8px; color: var(--fg); background: var(--bg); overflow-wrap: anywhere; }
   h2 { font-size: 13px; margin: 12px 0 4px; color: var(--accent); }
   .conn { border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; }
   .conn.closed { opacity: 0.5; }
@@ -54,7 +60,7 @@
   .timeline-error { background: #f44747; }
   .timeline-state { background: var(--muted); }
   #controls { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
-  .field { margin-bottom: 4px; }
+  .field { margin-bottom: 4px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   label { display: inline-block; width: 90px; font-size: 11px; color: var(--label-color); }
   #status { color: var(--muted); font-size: 11px; }
 </style>
