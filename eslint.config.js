@@ -20,6 +20,8 @@ module.exports = [
         MediaStreamTrack: 'readonly',
         MessageEvent: 'readonly',
         CloseEvent: 'readonly',
+        Event: 'readonly',
+        URL: 'readonly',
         WebSocket: 'readonly',
         AudioContext: 'readonly',
         webkitAudioContext: 'readonly',
@@ -58,6 +60,8 @@ module.exports = [
         RTCPeerConnection: 'readonly',
         MediaStream: 'readonly',
         setTimeout: 'readonly',
+        fetch: 'readonly',
+        XMLHttpRequest: 'readonly',
       },
     },
     rules: {
