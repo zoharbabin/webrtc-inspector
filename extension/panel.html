@@ -48,6 +48,8 @@
   button:hover { background: var(--button-hover-bg); }
   .copy-btn { font-size: 10px; padding: 0 4px; margin-left: 4px; }
   .msg-row { padding: 1px 0; }
+  #recordBtn.recording { background: #5b1e1e; color: #fff; border-color: #a33; }
+  .shot-thumb { width: 100px; max-width: 100%; border: 1px solid var(--border-subtle); border-radius: 2px; margin-top: 2px; cursor: pointer; }
   #eventlog { max-height: 150px; overflow-y: auto; border: 1px solid var(--border-subtle); padding: 2px 4px; }
   .log-row { border-bottom: 1px solid var(--border-subtle); padding: 2px 0; font-size: 11px; }
   #timeline { border: 1px solid var(--border-subtle); padding: 4px; }
@@ -69,6 +71,8 @@
   <div id="status">connecting…</div>
   <div class="field"><label style="width: auto;"><input type="checkbox" id="preserveLogChk"> Preserve log across reloads</label></div>
   <div class="field"><input id="filterInput" style="width: 60%" placeholder="Filter: free text, type:websocket-message, conn:3, dir:out"></div>
+  <div class="field"><button id="recordBtn">⏺ Record screenshots</button>
+    <span style="color: var(--muted); font-size: 11px;">captures on connection-created / track-added / reconnect while armed</span></div>
   <div id="connections"></div>
   <h2>WebSockets</h2>
   <div id="websockets"></div>
@@ -151,6 +155,7 @@
   <script src="panel-preserve-log.js"></script>
   <script src="panel-filter.js"></script>
   <script src="panel-severity.js"></script>
+  <script src="panel-screenshot.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>

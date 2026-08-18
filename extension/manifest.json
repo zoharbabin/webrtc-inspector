@@ -20,5 +20,6 @@
   ],
   "background": { "service_worker": "background.js" },
   "devtools_page": "devtools.html",
-  "permissions": ["contextMenus"]
+  "permissions": ["contextMenus", "tabs"],
+  "host_permissions": ["<all_urls>"]
 }
