@@ -102,6 +102,16 @@ function registerTools(server, cdpEndpoint) {
   registerSimpleTool(
     server,
     cdpEndpoint,
+    'wrtc_get_track_diagnostics',
+    "Match MediaStreamTrack ids (e.g. from a <video>/<audio> element's srcObject.getTracks()) against tracked tracks, returning that connection's kind/status/freeze-or-quality-limitation flags and qualityScore. Powers the panel's 'Test this stream' overlay (#37); null if none match.",
+    { trackIds: z.array(z.string()) },
+    'getTrackDiagnostics',
+    ({ trackIds }) => [trackIds]
+  );
+
+  registerSimpleTool(
+    server,
+    cdpEndpoint,
     'wrtc_clear_log',
     'Drop accumulated event log/stats history.',
     undefined,

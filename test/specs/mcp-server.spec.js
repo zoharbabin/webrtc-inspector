@@ -67,6 +67,7 @@ test.describe('MCP server tools', () => {
         'wrtc_register_network_preset',
         'wrtc_simulate_network_preset',
         'wrtc_export_webrtc_internals_dump',
+        'wrtc_get_track_diagnostics',
       ])
     );
   });
