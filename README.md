@@ -149,6 +149,17 @@ Covers the pure-JSON surface: snapshots/diffs/bundles/captures, `getSdp`, `killC
 
 Not exposed (can't cross the MCP boundary — live JS references): `setMediaFaultInjector`, `setDataChannelInterceptor`, `setWebSocketInterceptor`, `registerDecoder`, `setSuggestDecoder`, `setLabeler`, `setIceCandidateFilter`, `onEvent`, `replaceOutgoingTrack`, `getFakeMicTrack`. Use `core/webrtc-inspector.js` in-page for those.
 
+### Claude Code Skill
+
+`.claude/skills/webrtc-inspector/SKILL.md` — reconnect-testing, quality-regression-triage, and signaling-outage recipes on top of the MCP tools above, auto-discovered by Claude Code from a project's `.claude/skills/` directory.
+
+Works with no setup in a clone of this repo. In an npm-installed project, Claude Code doesn't scan `node_modules`, so copy the file in once:
+
+```sh
+mkdir -p .claude/skills/webrtc-inspector
+cp node_modules/@zoharbabin/webrtc-inspector/.claude/skills/webrtc-inspector/SKILL.md .claude/skills/webrtc-inspector/
+```
+
 ### `qualityScore` (1-5)
 
 `getSnapshot().connections[].qualityScore` — single number, `null` when no data. Averages up to two sub-scores:
