@@ -151,6 +151,28 @@ await runCompiledScenario(compiled, window.__webrtcInspector, { bundle: true });
 
 A scenario is split into ordered clauses on `"then"`/`";"`. Each clause maps to one primitive, checked in priority order: a named preset (`"home wifi"` / `"4g train"` / `"congested mobile"`) → `simulateNetworkPreset`; `"kill"`/`"terminate"`/an abrupt disconnect → `killConnection`; `"restart ice"` → `restartIce`; otherwise a clause with a duration (`"for 5s"` / `"for 200ms"`) → `simulateNetworkLoss`, with `targets` inferred from keywords (`data channel`, `websocket`/`signaling`, `http`/`whip`/`whep`, `media`/`audio`/`video`/`rtp`/`packet`) and defaulting to `['websocket', 'datachannel']` when none match.
 
+### Signature matching on captured sessions
+
+`extension/signature-matcher.js` is optional and not loaded by default. It's a classification layer on top of `captureEvents()`/`exportBundle()`'s captured event log: pattern-matches a session against a set of named signatures so common failure modes get flagged automatically instead of a manual read-through.
+
+```js
+const { matchSignatures } = require('webrtc-inspector/extension/signature-matcher.js'); // or a <script> global
+
+const capture = window.__webrtcInspector.captureEvents(); // or exportBundle()
+const findings = matchSignatures(capture);
+// [{ signature: 'missed-heartbeat-reconnect-gap', scopeKey: 'socketId', scopeId: 1,
+//    missedCount: 3, firstMissedSeq: 12, closeSeq: 15, description: '...' }, ...]
+```
+
+A signature is `{ name, match(events, opts) -> finding[] }` — a function, not a static pattern list, since patterns like "N missed heartbeats then abrupt close" need windowed/stateful reasoning a plain per-event predicate chain can't express. Two starter signatures ship as `DEFAULT_SIGNATURES`:
+
+| Signature | Flags |
+|---|---|
+| `missed-heartbeat-reconnect-gap` | `opts.minConsecutive` (default 3) consecutive unanswered outgoing WebSocket or data-channel messages on one socket/connection, followed by its close within `opts.windowMs` (default 10000) — a generic proxy for a missed-heartbeat-driven disconnect that doesn't require parsing any app-level ping/pong protocol. |
+| `abrupt-close-without-recovery` | A `websocket-close`/`connection-killed`/failed-or-disconnected `connection-state` with no reconnect attempt (a new connection/socket created) or same-connection recovery back to `'connected'` within `opts.windowMs`. |
+
+`matchSignatures(capture, signatures?, opts?)` accepts a raw events array, a `captureEvents()`-shaped `{events}` object, or an `exportBundle()`-shaped `{fullLog}` object; pass your own `signatures` array to run custom ones alongside or instead of the defaults.
+
 ### Metrics export (Prometheus / OpenTelemetry)
 
 `extension/metrics-exporter.js` is optional and not loaded by default — `chrome://webrtc-internals`-style in-page history is capped and non-persistent, so for longer-running sessions or CI-style regression tracking, load it alongside `core/webrtc-inspector.js` and `panel-sparkline.js` (it reuses that file's bitrate/RTT/jitter/loss derivation) and call:
