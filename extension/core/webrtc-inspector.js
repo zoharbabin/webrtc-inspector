@@ -57,8 +57,11 @@
   let labeler = null; // (meta) => string|null — single active hook, mirrors ws/dc interceptors
   const iceCandidateFilters = new Map(); // connectionId -> predicateFn(candidateType, candidateStr) => boolean, false drops
 
+  let nextSeq = 1;
+
   function emit(entry) {
     entry.ts = entry.ts || Date.now();
+    entry.seq = nextSeq++;
     log.push(entry);
     if (log.length > config.maxLogEntries) log.shift();
     listeners.forEach((cb) => {
@@ -1559,6 +1562,44 @@
     };
   }
 
+  // #28 — token-budgeted, paginated event log. getSnapshot()'s recentLog and
+  // exportWebrtcInternalsDump()'s fullLog are both fixed-size/unbounded; an
+  // agent polling a long-running session needs a cursor it can page through
+  // without either missing entries (fixed-count "last N" can skip a burst)
+  // or blowing its own context budget in one call. `since` is an entry's
+  // `seq` (monotonic per emit(), independent of Date.now()'s clock
+  // resolution and of log trimming), not a timestamp. maxChars is a
+  // characters-in-JSON proxy for a token budget — no tokenizer is bundled,
+  // so this is an approximation, documented as such. Per this project's
+  // no-silent-caps standard, truncation is always reported explicitly
+  // (never a silent drop) and at least one entry is always returned when
+  // one is available, so a too-small budget can't stall pagination forever.
+  function getEvents(opts) {
+    const { since = 0, limit = Infinity, maxChars = 25000 } = opts || {};
+    const candidates = log.filter((e) => e.seq > since);
+    const events = [];
+    let chars = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      if (events.length >= limit) break;
+      const entry = candidates[i];
+      const size = JSON.stringify(entry).length;
+      if (events.length > 0 && chars + size > maxChars) break;
+      events.push(entry);
+      chars += size;
+    }
+    const nextSince = events.length ? events[events.length - 1].seq : since;
+    const remainingCount = candidates.length - events.length;
+    return {
+      events,
+      nextSince,
+      remainingCount,
+      truncated: remainingCount > 0,
+      truncationMarker: remainingCount > 0
+        ? `${remainingCount} more entr${remainingCount === 1 ? 'y' : 'ies'} — call getEvents({ since: ${nextSince} }) for more`
+        : null,
+    };
+  }
+
   // ---- capture / diff for regression fixtures --------------------------------
   //
   // captureEvents() snapshots the event stream as-is (shallow copy, so later
@@ -1696,6 +1737,7 @@
     exportWebrtcInternalsDump,
     captureEvents,
     diffCaptures,
+    getEvents,
     getSdp,
     getTrackDiagnostics,
     setFakeMic,
