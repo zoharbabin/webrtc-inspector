@@ -104,6 +104,7 @@
       selectedCandidateType: null,
       candidateTypeFlips: [],
       avSyncDeltaMs: null,
+      qualityScore: null,
       pc,
     };
     connectionsById.set(id, record);
@@ -436,6 +437,7 @@
         updateCandidateTypeFlip(record, summary.reports);
         updateAvSyncDelta(record, summary.reports);
         updateRemoteTrackFreeze(record, summary.reports);
+        updateQualityScore(record, summary.reports, summary.ts);
       } catch (_) { /* getStats can race a just-closed connection */ }
     }, config.statsIntervalMs);
   }
@@ -465,9 +467,14 @@
   // relay path is a common, hard-to-spot cause of a sudden RTT/quality change —
   // flag it specifically, rather than every candidate-type transition (e.g. the
   // expected host -> srflx settling during initial ICE negotiation).
+  function findSelectedCandidatePair(reports) {
+    return reports.find((r) => r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded')
+      || reports.find((r) => r.type === 'candidate-pair' && r.state === 'succeeded')
+      || null;
+  }
+
   function updateCandidateTypeFlip(record, reports) {
-    const selectedPair = reports.find((r) => r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded')
-      || reports.find((r) => r.type === 'candidate-pair' && r.state === 'succeeded');
+    const selectedPair = findSelectedCandidatePair(reports);
     if (!selectedPair) return;
     const localCandidate = reports.find((r) => r.type === 'local-candidate' && r.id === selectedPair.localCandidateId);
     const type = localCandidate && localCandidate.candidateType;
@@ -514,6 +521,66 @@
       trackRecord.freezeRatio = elapsedSec > 0 ? trackRecord.totalFreezesDuration / elapsedSec : 0;
       trackRecord.qualityFlag = trackRecord.freezeRatio > 0.10 ? 'bad' : trackRecord.freezeRatio > 0.01 ? 'degraded' : 'ok';
     });
+  }
+
+  // Audio: simplified ITU-T G.107 E-model approximation (R-factor -> MOS),
+  // the same constants independently reproduced by rtpengine and multiple
+  // VoIP-monitoring write-ups (e.g. https://stackoverflow.com/q/54124329,
+  // https://telecom.altanai.com/2018/04/17/voip-call-metric-monitoring/).
+  // This is an approximation for a live diagnostic signal, not a certified
+  // MOS measurement — it ignores codec-specific impairment and echo.
+  function audioMosFromRtcp(rttMs, jitterMs, packetLossPercent) {
+    const effectiveLatency = rttMs + jitterMs * 2 + 10;
+    let r = effectiveLatency < 160 ? 93.2 - effectiveLatency / 40 : 93.2 - (effectiveLatency - 120) / 10;
+    r -= packetLossPercent * 2.5;
+    r = Math.max(0, Math.min(100, r));
+    const mos = 1 + 0.035 * r + 0.000007 * r * (r - 60) * (100 - r);
+    return Math.max(1, Math.min(4.5, mos));
+  }
+
+  // Video: no equivalent standardized model exists, so this uses a simple,
+  // transparent proxy — bits delivered per pixel per frame (bits-per-pixel),
+  // a common encoder-tuning heuristic where ~0.1 bpp is solidly good H.264/VP8
+  // quality and below ~0.01 bpp is visibly blocky. Linearly mapped onto 1-5.
+  // This is a heuristic, not a perceptual-quality regression against ground
+  // truth — it ignores content complexity and codec efficiency differences.
+  function videoScoreFromBitrate(bitrateBps, width, height, fps) {
+    if (!bitrateBps || !width || !height || !fps) return null;
+    const bitsPerPixelPerFrame = bitrateBps / (width * height * fps);
+    const low = 0.01;
+    const high = 0.12;
+    const t = Math.max(0, Math.min(1, (bitsPerPixelPerFrame - low) / (high - low)));
+    return 1 + 4 * t;
+  }
+
+  function updateQualityScore(record, reports, ts) {
+    const selectedPair = findSelectedCandidatePair(reports);
+    const rttMs = selectedPair && typeof selectedPair.currentRoundTripTime === 'number' ? selectedPair.currentRoundTripTime * 1000 : null;
+
+    let audioScore = null;
+    const audioReport = reports.find((r) => r.type === 'inbound-rtp' && r.kind === 'audio');
+    if (rttMs != null && audioReport) {
+      const jitterMs = (audioReport.jitter || 0) * 1000;
+      const totalPackets = (audioReport.packetsLost || 0) + (audioReport.packetsReceived || 0);
+      const lossPercent = totalPackets > 0 ? (audioReport.packetsLost / totalPackets) * 100 : 0;
+      audioScore = audioMosFromRtcp(rttMs, jitterMs, lossPercent);
+    }
+
+    let videoScore = null;
+    const videoReport = reports.find((r) => r.type === 'inbound-rtp' && r.kind === 'video');
+    const prevVideoReport = record.__prevVideoInboundReport;
+    if (videoReport && prevVideoReport && record.__prevStatsTs) {
+      const dtSec = (ts - record.__prevStatsTs) / 1000;
+      if (dtSec > 0) {
+        const bitrateBps = ((videoReport.bytesReceived - prevVideoReport.bytesReceived) * 8) / dtSec;
+        videoScore = videoScoreFromBitrate(bitrateBps, videoReport.frameWidth, videoReport.frameHeight, videoReport.framesPerSecond);
+      }
+    }
+    record.__prevVideoInboundReport = videoReport || null;
+    record.__prevStatsTs = ts;
+
+    const subScores = [audioScore, videoScore].filter((v) => v != null);
+    record.qualityScore = subScores.length ? subScores.reduce((a, b) => a + b, 0) / subScores.length : null;
   }
 
   // ---- remote audio metering ("listen" tap) ------------------------------
@@ -779,6 +846,7 @@
         selectedCandidateType: r.selectedCandidateType,
         candidateTypeFlips: r.candidateTypeFlips,
         avSyncDeltaMs: r.avSyncDeltaMs,
+        qualityScore: r.qualityScore,
         localSdpSummary: r.lastLocalSdp && r.lastLocalSdp.summary,
         remoteSdpSummary: r.lastRemoteSdp && r.lastRemoteSdp.summary,
       })),
