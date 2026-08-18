@@ -238,6 +238,44 @@ function registerTools(server, cdpEndpoint) {
       }
     }
   );
+
+  registerSimpleTool(
+    server,
+    cdpEndpoint,
+    'wrtc_register_network_preset',
+    "Register/override a named network-impairment preset: {durationMs, targets, pattern: 'full'|'flapping', flapIntervalMs?}.",
+    { name: z.string(), config: z.object({
+      durationMs: z.number(),
+      targets: z.array(z.enum(['websocket', 'datachannel', 'media', 'http'])),
+      pattern: z.enum(['full', 'flapping']),
+      flapIntervalMs: z.number().optional(),
+    }) },
+    'registerNetworkPreset',
+    ({ name, config }) => [name, config]
+  );
+
+  // Same live-Promise boundary issue as wrtc_simulate_network_loss above —
+  // awaits the full preset to completion in-page instead of returning a stop() handle.
+  server.registerTool(
+    'wrtc_simulate_network_preset',
+    {
+      description:
+        "Run a named network-impairment preset ('home-wifi', '4g-train', 'congested-mobile', or one registered via wrtc_register_network_preset). Awaits completion — no early-stop handle over MCP.",
+      inputSchema: { name: z.string() },
+    },
+    async ({ name }) => {
+      try {
+        const page = await getPage(cdpEndpoint);
+        await page.evaluate(async (n) => {
+          const run = window.__webrtcInspector.simulateNetworkPreset(n);
+          await run.done;
+        }, name);
+        return textResult({ completed: true, name });
+      } catch (err) {
+        return errorResult(err);
+      }
+    }
+  );
 }
 
 module.exports = { registerTools };
