@@ -16,14 +16,16 @@ Must run before the page's own scripts grab references to these globals — see 
 
 ## Usage
 
+`npm install webrtc-inspector` — the package's `main` resolves to `extension/core/webrtc-inspector.js`, so `require.resolve('webrtc-inspector')` gives an absolute path to the same file regardless of consumer.
+
 | Method | When to use | How |
 |---|---|---|
-| Chrome extension | Interactive, ad hoc inspection | `chrome://extensions` → Developer mode → Load unpacked → `extension/`. DevTools → "WebRTC Inspector" panel. |
-| Playwright | Scripted/automated tests | `await page.addInitScript({ path: 'core/webrtc-inspector.js' }); await page.goto(url);` — runs before any page script, on every navigation. |
-| DevTools console paste | One-off manual inspection | Paste `core/webrtc-inspector.js` into the console *before* the connection you want to inspect is created. |
-| MCP server | Any MCP client (Claude Code, etc.) driving/inspecting a real browser | `mcp/server.js` — see [MCP server](#mcp-server-window__webrtcinspector-as-typed-tools) below. |
+| Chrome extension | Interactive, ad hoc inspection | `chrome://extensions` → Developer mode → Load unpacked → `extension/` (or `node_modules/webrtc-inspector/extension/` if installed via npm). DevTools → "WebRTC Inspector" panel. |
+| Playwright | Scripted/automated tests | `await page.addInitScript({ path: require.resolve('webrtc-inspector') }); await page.goto(url);` — runs before any page script, on every navigation. |
+| DevTools console paste | One-off manual inspection | Paste the contents of `require.resolve('webrtc-inspector')` (or `extension/core/webrtc-inspector.js` in a repo clone) into the console *before* the connection you want to inspect is created. |
+| MCP server | Any MCP client (Claude Code, etc.) driving/inspecting a real browser | `webrtc-inspector-mcp` bin (or `mcp/server.js` in a repo clone) — see [MCP server](#mcp-server-window__webrtcinspector-as-typed-tools) below. |
 
-`extension/core/webrtc-inspector.js` is canonical; `core/webrtc-inspector.js` is a symlink to it. Keep it that way — a symlink pointing *outside* `extension/` silently loads as empty under Chrome's unpacked-extension loader (sandboxed to the selected folder), with no error.
+Within this repo, `extension/core/webrtc-inspector.js` is canonical; `core/webrtc-inspector.js` is a symlink to it, used only for repo-relative paths in local dev/tests — Chrome's unpacked-extension loader is sandboxed to the selected folder, so a symlink pointing *outside* `extension/` would silently load as empty there, and npm doesn't publish symlinks at all, which is why the package's `main` points at the real file directly instead.
 
 MCP-style Playwright tools that only expose post-navigation `browser_evaluate` can't match `addInitScript`'s timing — anything created before `browser_evaluate` runs goes unpatched. Use the extension instead for that workflow.
 

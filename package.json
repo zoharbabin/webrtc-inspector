@@ -2,12 +2,14 @@
   "name": "webrtc-inspector",
   "version": "1.4.0",
   "description": "Framework-agnostic live WebRTC inspection and fault injection: peer connections, tracks, data channels, WebSockets, fake mic/camera, and real transport/signaling fault injection for reconnect testing.",
-  "main": "core/webrtc-inspector.js",
+  "main": "extension/core/webrtc-inspector.js",
   "bin": {
     "webrtc-inspector-mcp": "mcp/server.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "files": [
-    "core",
     "extension",
     "mcp",
     "test",
