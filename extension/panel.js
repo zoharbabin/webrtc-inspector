@@ -148,7 +148,7 @@ function renderSnapshot(snap) {
   status.textContent = `${snap.connections.length} connection(s) · ${snap.webSockets.length} websocket(s) · fake mic ${snap.fakeMicActive ? 'armed' : 'not set'} · fake cam ${snap.fakeCamActive ? 'armed' : 'not set'} · dc interceptor ${snap.dataChannelInterceptorActive ? 'ON' : 'off'} · ws interceptor ${snap.webSocketInterceptorActive ? 'ON' : 'off'}`;
 
   const filter = parseFilterQuery(filterQuery);
-  const filteredConnections = filterConnections(snap.connections, filter);
+  const filteredConnections = sortConnectionsBySeverity(filterConnections(snap.connections, filter));
   const filteredWebSockets = filterWebSockets(snap.webSockets, filter);
 
   copyTargets = [];
