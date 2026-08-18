@@ -43,8 +43,9 @@ module.exports = [
     },
   },
   {
-    // panel-sparkline.js/panel-clipboard.js are loaded before panel.js as
-    // plain <script>s, exposing these as globals in the DevTools panel page.
+    // panel-sparkline.js/panel-clipboard.js/panel-timeline.js are loaded
+    // before panel.js as plain <script>s, exposing these as globals in the
+    // DevTools panel page.
     files: ['extension/panel.js'],
     languageOptions: {
       globals: {
@@ -52,6 +53,8 @@ module.exports = [
         sparklinePoints: 'readonly',
         buildSdpClipboardPayload: 'readonly',
         buildClipboardJson: 'readonly',
+        buildTimelineLanes: 'readonly',
+        timelineOffsetPct: 'readonly',
       },
     },
   },

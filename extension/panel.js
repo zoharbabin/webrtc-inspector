@@ -149,6 +149,29 @@ function renderSnapshot(snap) {
         <button class="copy-btn" data-copy-idx="${registerCopyTarget(entry)}">Copy</button></div>
     `).join('') || '<i>no events yet</i>';
   }
+
+  renderTimeline(snap.recentLog);
+}
+
+// #34 — horizontal waterfall of connection/track/data-channel/WebSocket
+// open/close/error events, purely derived from the same recentLog already
+// polled above (see extension/panel-timeline.js).
+function renderTimeline(recentLog) {
+  const el = document.getElementById('timeline');
+  if (!el) return;
+  const { lanes, minTs, maxTs } = buildTimelineLanes(recentLog);
+  if (!lanes.length) {
+    el.innerHTML = '<i>no lifecycle events yet</i>';
+    return;
+  }
+  el.innerHTML = lanes.map((lane) => `
+    <div class="timeline-lane">
+      <span class="timeline-label">${escapeHtml(lane.label)}</span>
+      <div class="timeline-track">
+        ${lane.events.map((e) => `<span class="timeline-marker timeline-${e.category}" style="left: ${timelineOffsetPct(e.ts, minTs, maxTs)}%" title="${escapeHtml(e.type)} @ ${new Date(e.ts).toLocaleTimeString()}"></span>`).join('')}
+      </div>
+    </div>
+  `).join('');
 }
 
 async function poll() {

@@ -31,6 +31,8 @@ The DevTools panel renders a live bitrate/RTT/jitter/loss sparkline per connecti
 
 The panel also has "Copy" buttons next to each connection's SDP, each data-channel/WebSocket message, and each recent event-log entry — copies the underlying JSON straight to the clipboard for pasting into a bug report (`extension/panel-clipboard.js`).
 
+The panel renders a per-connection/-WebSocket timeline of open/close/error lifecycle events (`extension/panel-timeline.js`), purely from the same event-log timestamps already polled via `getSnapshot()` — no new instrumentation.
+
 ## API — `window.__webrtcInspector`
 
 | Method | Does |
