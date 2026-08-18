@@ -871,9 +871,83 @@
     };
   }
 
+  function fieldChange(before, after) {
+    return before === after ? null : { from: before, to: after };
+  }
+
+  function diffById(listA, listB) {
+    const mapA = new Map(listA.map((x) => [x.id, x]));
+    const mapB = new Map(listB.map((x) => [x.id, x]));
+    return {
+      added: Array.from(mapB.keys()).filter((id) => !mapA.has(id)),
+      removed: Array.from(mapA.keys()).filter((id) => !mapB.has(id)),
+      common: Array.from(mapB.keys()).filter((id) => mapA.has(id)),
+      mapA,
+      mapB,
+    };
+  }
+
+  function diffConnection(before, after) {
+    const changes = {};
+    ['iceConnectionState', 'connectionState', 'signalingState'].forEach((key) => {
+      const c = fieldChange(before.state && before.state[key], after.state && after.state[key]);
+      if (c) changes[key] = c;
+    });
+    [
+      ['closed', before.closed, after.closed],
+      ['localTrackCount', before.localTracks.length, after.localTracks.length],
+      ['remoteTrackCount', before.remoteTracks.length, after.remoteTracks.length],
+      ['dataChannelCount', before.dataChannels.length, after.dataChannels.length],
+      ['selectedCandidateType', before.selectedCandidateType, after.selectedCandidateType],
+      ['qualityScore', before.qualityScore, after.qualityScore],
+      ['avSyncDeltaMs', before.avSyncDeltaMs, after.avSyncDeltaMs],
+    ].forEach(([key, from, to]) => {
+      const c = fieldChange(from, to);
+      if (c) changes[key] = c;
+    });
+    return changes;
+  }
+
+  function diffWebSocket(before, after) {
+    const changes = {};
+    [
+      ['state', before.state, after.state],
+      ['sentCount', before.sentCount, after.sentCount],
+      ['receivedCount', before.receivedCount, after.receivedCount],
+    ].forEach(([key, from, to]) => {
+      const c = fieldChange(from, to);
+      if (c) changes[key] = c;
+    });
+    return changes;
+  }
+
+  // Pure function over two getSnapshot() outputs — no new instrumentation,
+  // so it works regardless of the detail mode either snapshot was taken with.
+  function getSnapshotDiff(before, after) {
+    const conn = diffById(before.connections, after.connections);
+    const connections = conn.common
+      .map((id) => ({ id, ...diffConnection(conn.mapA.get(id), conn.mapB.get(id)) }))
+      .filter((c) => Object.keys(c).length > 1);
+
+    const ws = diffById(before.webSockets, after.webSockets);
+    const webSockets = ws.common
+      .map((id) => ({ id, ...diffWebSocket(ws.mapA.get(id), ws.mapB.get(id)) }))
+      .filter((w) => Object.keys(w).length > 1);
+
+    return {
+      connectionsAdded: conn.added,
+      connectionsRemoved: conn.removed,
+      connections,
+      webSocketsAdded: ws.added,
+      webSocketsRemoved: ws.removed,
+      webSockets,
+    };
+  }
+
   window.__webrtcInspector = {
     version: '1.4.0',
     getSnapshot,
+    getSnapshotDiff,
     getSdp,
     setFakeMic,
     clearFakeMic,
