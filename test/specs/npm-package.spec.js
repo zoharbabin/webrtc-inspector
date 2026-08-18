@@ -66,3 +66,32 @@ test.describe('npm package contents', () => {
     });
   });
 });
+
+// #80 — the README's MCP client config blocks are copied verbatim by a human
+// into their own config; a stale package/bin name there is invisible to every
+// other test in this suite since nothing else parses README.md.
+test.describe('README MCP client config blocks', () => {
+  const README = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+  const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+  const binName = Object.keys(pkgJson.bin)[0];
+
+  function jsonBlocksContaining(marker) {
+    const blocks = [...README.matchAll(/```json\n([\s\S]*?)\n```/g)].map((m) => m[1]);
+    return blocks.filter((b) => b.includes(marker)).map((b) => JSON.parse(b));
+  }
+
+  test('every mcpServers JSON block is valid JSON and points at the real package + bin', () => {
+    const blocks = jsonBlocksContaining('"mcpServers"');
+    expect(blocks.length).toBeGreaterThan(0);
+    blocks.forEach((config) => {
+      const server = Object.values(config.mcpServers)[0];
+      expect(server.command).toBe('npx');
+      expect(server.args).toContain(`--package=${pkgJson.name}`);
+      expect(server.args).toContain(binName);
+    });
+  });
+
+  test('the claude mcp add one-liner uses the real package + bin name', () => {
+    expect(README).toContain(`--package=${pkgJson.name} ${binName}`);
+  });
+});
