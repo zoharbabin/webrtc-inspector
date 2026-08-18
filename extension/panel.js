@@ -46,6 +46,8 @@ if (chrome.devtools && chrome.devtools.network && chrome.devtools.network.onNavi
     }
     pageGen += 1;
     lastSnap = null;
+    captureConnState = new Map();
+    lastCapturedSeq = -1;
   });
 }
 document.getElementById('preserveLogChk').addEventListener('change', (e) => {
@@ -61,6 +63,49 @@ let lastRawSnap = null;
 document.getElementById('filterInput').addEventListener('input', (e) => {
   filterQuery = e.target.value;
   if (lastRawSnap !== null) renderSnapshot(lastRawSnap);
+});
+
+// #38 — screenshot capture synced to key event-log transitions, gated
+// behind an explicit "Record" toggle (see panel-screenshot.js for the
+// trigger-decision logic). lastCapturedSeq/captureConnState are scoped to
+// the current page generation, since core/webrtc-inspector.js's seq counter
+// (and connection ids) reset on every navigation.
+let recording = false;
+let captureConnState = new Map();
+let lastCapturedSeq = -1;
+const screenshotsBySeq = new Map();
+
+function captureScreenshot(seq) {
+  chrome.tabs.get(chrome.devtools.inspectedWindow.tabId, (tab) => {
+    if (!tab) return;
+    chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 50 }, (dataUrl) => {
+      if (!dataUrl) return;
+      screenshotsBySeq.set(seq, dataUrl);
+      renderSnapshot(lastRawSnap);
+    });
+  });
+}
+
+function processCaptureTriggers(recentLog) {
+  if (!recording || !recentLog || !recentLog.length) return;
+  const newEntries = recentLog.filter((e) => e.seq > lastCapturedSeq);
+  if (!newEntries.length) return;
+  lastCapturedSeq = newEntries[newEntries.length - 1].seq;
+  const { targets, state } = selectCaptureTargets(newEntries, captureConnState);
+  captureConnState = state;
+  targets.forEach((entry) => captureScreenshot(entry.seq));
+}
+
+document.getElementById('recordBtn').addEventListener('click', () => {
+  recording = !recording;
+  const btn = document.getElementById('recordBtn');
+  btn.textContent = recording ? '⏹ Stop recording' : '⏺ Record screenshots';
+  btn.classList.toggle('recording', recording);
+  if (recording) {
+    captureConnState = new Map();
+    const log = (lastSnap && lastSnap.recentLog) || [];
+    lastCapturedSeq = log.length ? log[log.length - 1].seq : -1;
+  }
 });
 
 function renderSparklines(connectionId, latestStats) {
@@ -116,6 +161,8 @@ async function copyText(text, btn) {
 }
 
 document.addEventListener('click', async (e) => {
+  const thumb = e.target.closest('.shot-thumb');
+  if (thumb) { window.open(thumb.src, '_blank'); return; }
   const btn = e.target.closest('.copy-btn');
   if (!btn) return;
   if (btn.dataset.copyIdx !== undefined) {
@@ -199,7 +246,8 @@ function renderSnapshot(snap) {
     const entries = filteredLog.slice(-20).reverse();
     logEl.innerHTML = entries.map((entry) => `
       <div class="log-row ${entry._stale ? 'stale' : ''}">${new Date(entry.ts).toLocaleTimeString()} · ${escapeHtml(entry.type)}${entry.connectionId !== undefined ? ` · #${entry.connectionId}` : ''}${entry._stale ? ` <span class="badge">page load #${entry._gen}</span>` : ''}
-        <button class="copy-btn" data-copy-idx="${registerCopyTarget(entry)}">Copy</button></div>
+        <button class="copy-btn" data-copy-idx="${registerCopyTarget(entry)}">Copy</button>
+        ${screenshotsBySeq.has(entry.seq) ? `<div><img class="shot-thumb" src="${screenshotsBySeq.get(entry.seq)}" data-shot-seq="${entry.seq}"></div>` : ''}</div>
     `).join('') || ((snap.recentLog || []).length ? '<i>no events match the filter</i>' : '<i>no events yet</i>');
   }
 
@@ -230,7 +278,7 @@ function renderTimeline(recentLog) {
 async function poll() {
   try {
     const snap = await evalInPage('window.__webrtcInspector && window.__webrtcInspector.getSnapshot()');
-    if (snap) lastSnap = snap;
+    if (snap) { lastSnap = snap; processCaptureTriggers(snap.recentLog); }
     lastRawSnap = mergeSnapshotForRender(pageHistory, snap, preserveLog);
     renderSnapshot(lastRawSnap);
   } catch (err) {

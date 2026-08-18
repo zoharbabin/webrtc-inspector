@@ -45,9 +45,9 @@ module.exports = [
   },
   {
     // panel-sparkline.js/panel-clipboard.js/panel-timeline.js/panel-theme.js/
-    // panel-preserve-log.js/panel-filter.js/panel-severity.js are loaded
-    // before panel.js as plain <script>s, exposing these as globals in the
-    // DevTools panel page.
+    // panel-preserve-log.js/panel-filter.js/panel-severity.js/
+    // panel-screenshot.js are loaded before panel.js as plain <script>s,
+    // exposing these as globals in the DevTools panel page.
     files: ['extension/panel.js'],
     languageOptions: {
       globals: {
@@ -65,6 +65,7 @@ module.exports = [
         filterConnections: 'readonly',
         filterWebSockets: 'readonly',
         sortConnectionsBySeverity: 'readonly',
+        selectCaptureTargets: 'readonly',
       },
     },
   },
