@@ -56,6 +56,7 @@ module.exports = [
         buildClipboardJson: 'readonly',
         buildTimelineLanes: 'readonly',
         timelineOffsetPct: 'readonly',
+        resolveTheme: 'readonly',
       },
     },
   },

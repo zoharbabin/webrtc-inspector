@@ -3,41 +3,59 @@
 <head>
 <meta charset="utf-8">
 <style>
-  body { font: 12px -apple-system, sans-serif; margin: 8px; color: #ddd; background: #1e1e1e; }
-  h2 { font-size: 13px; margin: 12px 0 4px; color: #9cdcfe; }
-  .conn { border: 1px solid #444; border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; }
+  /* #30 — DevTools theme sync: panel.js sets documentElement's data-theme
+     from chrome.devtools.panels.themeName ('dark' or 'default'/light) on
+     load and on change. :root's variables are this project's original
+     (dark) look, kept as the fallback before/without JS running or for any
+     future theme name Chrome adds; [data-theme="default"] overrides to a
+     light palette. */
+  :root {
+    --fg: #ddd; --bg: #1e1e1e; --accent: #9cdcfe; --muted: #888; --label-color: #aaa;
+    --border: #444; --border-subtle: #333; --panel-bg: #151515;
+    --badge-bg: #333; --badge-connected-bg: #1e5b1e; --badge-failed-bg: #5b1e1e;
+    --input-bg: #2d2d2d; --input-border: #555; --button-hover-bg: #3d3d3d;
+  }
+  :root[data-theme="default"] {
+    --fg: #202124; --bg: #ffffff; --accent: #1a73e8; --muted: #666; --label-color: #555;
+    --border: #ccc; --border-subtle: #e0e0e0; --panel-bg: #f5f5f5;
+    --badge-bg: #e0e0e0; --badge-connected-bg: #c8e6c9; --badge-failed-bg: #f8d7da;
+    --input-bg: #f0f0f0; --input-border: #bbb; --button-hover-bg: #e8e8e8;
+  }
+  body { font: 12px -apple-system, sans-serif; margin: 8px; color: var(--fg); background: var(--bg); }
+  h2 { font-size: 13px; margin: 12px 0 4px; color: var(--accent); }
+  .conn { border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; }
   .conn.closed { opacity: 0.5; }
   .row { display: flex; gap: 8px; }
   .row > div { flex: 1; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
-  td, th { border-bottom: 1px solid #333; padding: 2px 4px; text-align: left; }
-  .badge { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; background: #333; }
-  .badge.connected { background: #1e5b1e; }
-  .badge.failed, .badge.closed { background: #5b1e1e; }
+  td, th { border-bottom: 1px solid var(--border-subtle); padding: 2px 4px; text-align: left; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; background: var(--badge-bg); }
+  .badge.connected { background: var(--badge-connected-bg); }
+  .badge.failed, .badge.closed { background: var(--badge-failed-bg); }
   .sparklines { display: flex; gap: 10px; margin: 4px 0; flex-wrap: wrap; }
   .sparkline { display: flex; flex-direction: column; align-items: flex-start; }
-  .sparkline svg { background: #151515; border: 1px solid #333; border-radius: 2px; }
-  .sparkline .label { font-size: 10px; color: #888; margin-top: 2px; }
-  input, textarea, button { background: #2d2d2d; color: #ddd; border: 1px solid #555; border-radius: 3px; padding: 3px 5px; }
+  .sparkline svg { background: var(--panel-bg); border: 1px solid var(--border-subtle); border-radius: 2px; }
+  .sparkline .label { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  input, textarea, button { background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border); border-radius: 3px; padding: 3px 5px; }
   button { cursor: pointer; }
-  button:hover { background: #3d3d3d; }
+  button:hover { background: var(--button-hover-bg); }
   .copy-btn { font-size: 10px; padding: 0 4px; margin-left: 4px; }
   .msg-row { padding: 1px 0; }
-  #eventlog { max-height: 150px; overflow-y: auto; border: 1px solid #333; padding: 2px 4px; }
-  .log-row { border-bottom: 1px solid #333; padding: 2px 0; font-size: 11px; }
-  #timeline { border: 1px solid #333; padding: 4px; }
+  #eventlog { max-height: 150px; overflow-y: auto; border: 1px solid var(--border-subtle); padding: 2px 4px; }
+  .log-row { border-bottom: 1px solid var(--border-subtle); padding: 2px 0; font-size: 11px; }
+  #timeline { border: 1px solid var(--border-subtle); padding: 4px; }
   .timeline-lane { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
-  .timeline-label { width: 60px; font-size: 10px; color: #9cdcfe; flex-shrink: 0; }
-  .timeline-track { position: relative; flex: 1; height: 12px; background: #151515; border-radius: 2px; }
+  .timeline-label { width: 60px; font-size: 10px; color: var(--accent); flex-shrink: 0; }
+  .timeline-track { position: relative; flex: 1; height: 12px; background: var(--panel-bg); border-radius: 2px; }
   .timeline-marker { position: absolute; top: 1px; width: 6px; height: 10px; border-radius: 1px; transform: translateX(-3px); }
   .timeline-open { background: #4ec9b0; }
   .timeline-close { background: #d16969; }
   .timeline-error { background: #f44747; }
-  .timeline-state { background: #888; }
-  #controls { border-top: 1px solid #444; padding-top: 8px; margin-top: 8px; }
+  .timeline-state { background: var(--muted); }
+  #controls { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
   .field { margin-bottom: 4px; }
-  label { display: inline-block; width: 90px; font-size: 11px; color: #aaa; }
-  #status { color: #888; font-size: 11px; }
+  label { display: inline-block; width: 90px; font-size: 11px; color: var(--label-color); }
+  #status { color: var(--muted); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -120,6 +138,7 @@
   <script src="panel-sparkline.js"></script>
   <script src="panel-clipboard.js"></script>
   <script src="panel-timeline.js"></script>
+  <script src="panel-theme.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>
