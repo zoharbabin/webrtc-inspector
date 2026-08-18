@@ -35,6 +35,7 @@
   const recordByPc = new WeakMap(); // pc -> record
   const trackTagById = new WeakMap(); // MediaStreamTrack -> {tag, sourceCallId}
   const trackRecordByTrack = new WeakMap(); // MediaStreamTrack -> trackRecord (for explicit stop() detection)
+  const freezeTrackingStartByTrackRecord = new WeakMap(); // remote video trackRecord -> Date.now() at track start, for freezeRatio's elapsed-time denominator
   const log = [];
   const listeners = new Set();
   let nextConnectionId = 1;
@@ -136,8 +137,12 @@
     });
     pc.addEventListener('track', (ev) => {
       const tag = trackTagById.get(ev.track);
-      const trackRecord = { trackId: ev.track.id, kind: ev.track.kind, label: ev.track.label, sourceTag: tag ? tag.tag : null, status: 'live', level: null };
+      const trackRecord = {
+        trackId: ev.track.id, kind: ev.track.kind, label: ev.track.label, sourceTag: tag ? tag.tag : null, status: 'live', level: null,
+        freezeCount: null, totalFreezesDuration: null, freezeRatio: null, qualityFlag: null,
+      };
       record.remoteTracks.push(trackRecord);
+      freezeTrackingStartByTrackRecord.set(trackRecord, Date.now());
       attachTrackLifecycle(record, trackRecord, ev.track, 'remote');
       if (ev.track.kind === 'audio') meterRemoteAudioTrack(trackRecord, ev.track);
       emit({ type: 'track-received', connectionId: id, kind: ev.track.kind, trackId: ev.track.id, sourceTag: tag ? tag.tag : null });
@@ -430,6 +435,7 @@
         updateLocalTrackQuality(record, summary.reports);
         updateCandidateTypeFlip(record, summary.reports);
         updateAvSyncDelta(record, summary.reports);
+        updateRemoteTrackFreeze(record, summary.reports);
       } catch (_) { /* getStats can race a just-closed connection */ }
     }, config.statsIntervalMs);
   }
@@ -488,6 +494,26 @@
     const audio = avgJitterBufferDelayMs(reports.find((r) => r.type === 'inbound-rtp' && r.kind === 'audio'));
     const video = avgJitterBufferDelayMs(reports.find((r) => r.type === 'inbound-rtp' && r.kind === 'video'));
     record.avSyncDeltaMs = audio != null && video != null ? audio - video : null;
+  }
+
+  // freezeCount/totalFreezesDuration (W3C stats spec, video-kind inbound-rtp
+  // only) are cumulative counters with no ratio of their own — freezeRatio
+  // divides totalFreezesDuration by wall-clock time elapsed since the track
+  // started, giving the fraction of playback time spent frozen. Thresholds
+  // follow this project's own published guidance: >10% is unshippable, >1%
+  // is a noticeable degradation worth flagging.
+  function updateRemoteTrackFreeze(record, reports) {
+    reports.forEach((report) => {
+      if (report.type !== 'inbound-rtp' || report.kind !== 'video' || !report.trackIdentifier) return;
+      const trackRecord = record.remoteTracks.find((t) => t.trackId === report.trackIdentifier);
+      if (!trackRecord) return;
+      const startTs = freezeTrackingStartByTrackRecord.get(trackRecord) || Date.now();
+      const elapsedSec = (Date.now() - startTs) / 1000;
+      trackRecord.freezeCount = report.freezeCount || 0;
+      trackRecord.totalFreezesDuration = report.totalFreezesDuration || 0;
+      trackRecord.freezeRatio = elapsedSec > 0 ? trackRecord.totalFreezesDuration / elapsedSec : 0;
+      trackRecord.qualityFlag = trackRecord.freezeRatio > 0.10 ? 'bad' : trackRecord.freezeRatio > 0.01 ? 'degraded' : 'ok';
+    });
   }
 
   // ---- remote audio metering ("listen" tap) ------------------------------
