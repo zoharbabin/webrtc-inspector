@@ -29,7 +29,7 @@ npm install @zoharbabin/webrtc-inspector
 
 | Method | When | How |
 |---|---|---|
-| Chrome extension | Interactive inspection | `chrome://extensions` → Developer mode → Load unpacked → `extension/` (or `node_modules/@zoharbabin/webrtc-inspector/extension/`). DevTools → "WebRTC Inspector" panel. |
+| Chrome extension | Interactive inspection | Download the zip from the [latest release](https://github.com/zoharbabin/webrtc-inspector/releases/latest), unzip, then `chrome://extensions` → Developer mode → Load unpacked → that folder. (Or, from a clone: `extension/` / `node_modules/@zoharbabin/webrtc-inspector/extension/`.) DevTools → "WebRTC Inspector" panel. |
 | Playwright | Scripted tests | `await page.addInitScript({ path: require.resolve('@zoharbabin/webrtc-inspector') })` before `page.goto(url)`. Runs on every navigation. |
 | DevTools console paste | One-off manual inspection | Paste `require.resolve('@zoharbabin/webrtc-inspector')`'s contents into the console before the connection is created. |
 | MCP server | MCP clients (Claude Code, etc.) | `webrtc-inspector-mcp` bin, or `mcp/server.js` in a clone. See [MCP server](#mcp-server). |
@@ -260,6 +260,7 @@ npx playwright install --with-deps chromium   # once
 npm test                                      # headless run
 npm run test:ui                               # interactive UI mode
 npm run lint
+npm run pack-extension                        # -> dist/webrtc-inspector-extension-v<version>.zip
 ```
 
 Playwright suite under `test/specs/`, one file per feature area. Specs connect two `RTCPeerConnection`s directly in one page (no signaling server) via `test/fixtures/session-helpers.js`.
@@ -267,6 +268,8 @@ Playwright suite under `test/specs/`, one file per feature area. Specs connect t
 `test/specs/mcp-server.spec.js` launches a real Chromium with `--remote-debugging-port`, spawns `mcp/server.js` as a subprocess over stdio via the MCP SDK's `Client`, and drives a real loopback session through the MCP tools.
 
 CI (`.github/workflows/ci.yml`) runs lint + the full suite on every push/PR, posts a pass/fail table to the job summary, and uploads the HTML report (traces, screenshots on failure) as an artifact.
+
+Pushing a `v<version>` tag matching `package.json` triggers `.github/workflows/release.yml`: packs `extension/` and attaches the zip to a GitHub Release.
 
 ## License
 

@@ -109,7 +109,7 @@ module.exports = [
     },
   },
   {
-    files: ['test/static-server.js', 'test/report-summary.js'],
+    files: ['test/static-server.js', 'test/report-summary.js', 'scripts/**/*.js'],
     languageOptions: {
       ecmaVersion: 2021,
       sourceType: 'commonjs',
