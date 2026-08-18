@@ -97,4 +97,50 @@ test.describe('RTCPeerConnection instrumentation', () => {
     const recA = snap.connections.find((c) => c.id === connectionIdA);
     expect(recA.localTracks.some((t) => t.sourceTag === 'fake-mic')).toBe(true);
   });
+
+  test('promotes qualityLimitationReason onto a sending video track', async ({ page }) => {
+    const { connectionIdA, trackId } = await page.evaluate(async () => {
+      await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const trackId = stream.getVideoTracks()[0].id;
+      const { connectionIdA } = await window.testHelpers.createLoopbackSession('test-channel', (pcA) => {
+        pcA.addTrack(stream.getVideoTracks()[0], stream);
+      });
+      return { connectionIdA, trackId };
+    });
+    await page.waitForFunction(
+      ({ id, trackId }) => {
+        const rec = window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id);
+        const track = rec && rec.localTracks.find((t) => t.trackId === trackId);
+        return !!track && track.qualityLimitationReason !== null;
+      },
+      { id: connectionIdA, trackId },
+      { timeout: 3000 }
+    );
+    const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
+    const recA = snap.connections.find((c) => c.id === connectionIdA);
+    const track = recA.localTracks.find((t) => t.trackId === trackId);
+    expect(track.qualityLimitationReason).toBe('none');
+  });
+
+  test('leaves qualityLimitationReason null for an audio-only track', async ({ page }) => {
+    const { connectionIdA, trackId } = await page.evaluate(async () => {
+      await window.__webrtcInspector.setFakeMic(window.__SILENT_WAV);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const trackId = stream.getAudioTracks()[0].id;
+      const { connectionIdA } = await window.testHelpers.createLoopbackSession('test-channel', (pcA) => {
+        pcA.addTrack(stream.getAudioTracks()[0], stream);
+      });
+      return { connectionIdA, trackId };
+    });
+    await page.waitForFunction(
+      (id) => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).latestStats !== null,
+      connectionIdA,
+      { timeout: 3000 }
+    );
+    const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
+    const recA = snap.connections.find((c) => c.id === connectionIdA);
+    const track = recA.localTracks.find((t) => t.trackId === trackId);
+    expect(track.qualityLimitationReason).toBeNull();
+  });
 });
