@@ -63,6 +63,7 @@ module.exports = [
         setTimeout: 'readonly',
         fetch: 'readonly',
         XMLHttpRequest: 'readonly',
+        Event: 'readonly',
       },
     },
     rules: {

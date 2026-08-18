@@ -83,6 +83,19 @@ Tools cover the pure-JSON-in/JSON-out surface: snapshots/diffs/bundles/captures,
 
 Both are approximations for a live diagnostic signal, not certified MOS/VMAF measurements — use `qualityScore` to spot "this call is degrading," not to certify codec performance.
 
+### `flags` (heuristic anomaly detection)
+
+`getSnapshot().connections[].flags` is a list of short machine-readable strings naming suspicious states worth a human's attention, computed live at snapshot time from signals `getSnapshot()` already tracks — no extra polling. Empty when nothing looks wrong.
+
+| Flag | Meaning |
+|---|---|
+| `ice_stuck_checking_<ms>ms` | ICE has been in `checking` for over 5s without settling — a hung NAT traversal / connectivity-check failure. |
+| `datachannel_opened_never_used:<label>` | A data channel has been `open` for over 3s without a single message either way. |
+| `track_added_no_stats:<trackId>` | A track was added over 3s ago but has never correlated to any outbound-rtp (local) or inbound-rtp (remote) stats report — usually a stuck negotiation. |
+| `freeze_ratio_bad:<trackId>` | A remote track's `freezeRatio` (fraction of time spent frozen) is above 10% — same threshold as its `qualityFlag: 'bad'`. |
+| `quality_limited_<reason>:<trackId>` | A local track's `qualityLimitationReason` is a non-`'none'` value (`cpu`, `bandwidth`, `other`). |
+| `candidate_type_flipped_<n>x` | The connection's selected candidate type has flipped (srflx↔relay) 2 or more times. |
+
 ### Reconnect / fault-injection testing
 
 `browserContext.setOffline()` and DevTools' `Network.emulateNetworkConditions` don't touch already-flowing WebRTC UDP media — both act on the network-service layer, which WebRTC bypasses. `pfctl`/`tc` (OS-level) is the traditional fallback; `setMediaFaultInjector` (Chromium only) is the page-JS-only alternative for already-flowing media.
