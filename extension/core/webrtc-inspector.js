@@ -30,7 +30,7 @@
     return;
   }
 
-  const config = { statsIntervalMs: 2000, maxLogEntries: 5000, maxStatsHistory: 60, levelIntervalMs: 250 };
+  const config = { statsIntervalMs: 2000, maxLogEntries: 5000, maxStatsHistory: 60, levelIntervalMs: 250, maxDecodedPreviewChars: 500 };
   const connectionsById = new Map(); // id -> record
   const recordByPc = new WeakMap(); // pc -> record
   const trackTagById = new WeakMap(); // MediaStreamTrack -> {tag, sourceCallId}
@@ -45,6 +45,8 @@
   const wsRecordByInstance = new WeakMap(); // WebSocket -> record
   let nextSocketId = 1;
   let webSocketInterceptor = null;
+  const decoders = []; // {id, matcher, decodeFn}, registration order = match priority
+  let nextDecoderId = 1;
 
   function emit(entry) {
     entry.ts = entry.ts || Date.now();
@@ -73,6 +75,78 @@
     if (!candidateStr) return null;
     const m = candidateStr.match(/typ (\w+)/);
     return m ? m[1] : null; // host | srflx | prflx | relay
+  }
+
+  // ---- message decoders -----------------------------------------------------
+  //
+  // Opt-in protocol decoding on top of the raw preview() capture below.
+  // registerDecoder(matcher, decodeFn) mirrors onEvent's "return an
+  // unsubscribe closure" convention. First registered match wins; decode runs
+  // after any interceptor has had a chance to rewrite/block the message, so a
+  // decoder sees the data as actually delivered/sent.
+
+  function registerDecoder(matcher, decodeFn) {
+    const entry = { id: nextDecoderId++, matcher, decodeFn };
+    decoders.push(entry);
+    return () => {
+      const idx = decoders.indexOf(entry);
+      if (idx !== -1) decoders.splice(idx, 1);
+    };
+  }
+
+  function cappedDecodedResult(decoderId, value) {
+    let json;
+    try {
+      json = JSON.stringify(value);
+    } catch (err) {
+      return { decoderId, decodeError: `decoder output not JSON-serializable: ${err.message}` };
+    }
+    if (json === undefined) return { decoderId, decodeError: 'decoder output not JSON-serializable' };
+    if (json.length <= config.maxDecodedPreviewChars) return { decoderId, decoded: value };
+    return { decoderId, decoded: json.slice(0, config.maxDecodedPreviewChars) + '…' };
+  }
+
+  function normalizeDecodable(data) {
+    return data instanceof Blob ? data.arrayBuffer() : Promise.resolve(data);
+  }
+
+  // Returns null when no decoder is registered (zero cost for callers who
+  // never opt in), otherwise a Promise resolving to {decoderId, decoded} or
+  // {decoderId, decodeError} — never rejects, a throwing decodeFn is caught.
+  function runDecoders(meta, data) {
+    if (decoders.length === 0) return null;
+    let match;
+    for (const d of decoders) {
+      try {
+        if (d.matcher(meta)) { match = d; break; }
+      } catch (_) { /* a throwing matcher just doesn't match */ }
+    }
+    if (!match) return null;
+    return normalizeDecodable(data).then((normalized) => {
+      let result;
+      try {
+        result = match.decodeFn(normalized, meta);
+      } catch (err) {
+        return { decoderId: match.id, decodeError: String(err) };
+      }
+      if (result && typeof result.then === 'function') {
+        return result.then(
+          (decoded) => cappedDecodedResult(match.id, decoded),
+          (err) => ({ decoderId: match.id, decodeError: String(err) })
+        );
+      }
+      return cappedDecodedResult(match.id, result);
+    });
+  }
+
+  // Attaches a decode result (once resolved) onto the already-pushed message
+  // record in place, and emits a follow-up event — never blocks delivery.
+  function attachDecodeResult(decodePromise, messageRecord, eventType, eventBase) {
+    if (!decodePromise) return;
+    decodePromise.then((result) => {
+      Object.assign(messageRecord, result);
+      emit(Object.assign({ type: eventType }, eventBase, result));
+    });
   }
 
   // ---- RTCPeerConnection ----------------------------------------------------
@@ -294,8 +368,15 @@
           Object.defineProperty(ev, 'data', { value: data, configurable: true });
         }
       }
-      dcRecord.messages.push({ dir: 'in', ts: Date.now(), preview: preview(data) });
+      const messageRecord = { dir: 'in', ts: Date.now(), preview: preview(data) };
+      dcRecord.messages.push(messageRecord);
       emit({ type: 'datachannel-message', connectionId: record.id, label: channel.label, dir: 'in', preview: preview(data) });
+      attachDecodeResult(
+        runDecoders({ kind: 'datachannel', connectionId: record.id, label: channel.label, dir: 'in' }, data),
+        messageRecord,
+        'datachannel-message-decoded',
+        { connectionId: record.id, label: channel.label, dir: 'in' }
+      );
     });
 
     if (OriginalRTCDataChannelSend && !channel.__inspectorSendPatched) {
@@ -311,8 +392,15 @@
           }
           if (result !== undefined) payload = result;
         }
-        dcRecord.messages.push({ dir: 'out', ts: Date.now(), preview: preview(payload) });
+        const messageRecord = { dir: 'out', ts: Date.now(), preview: preview(payload) };
+        dcRecord.messages.push(messageRecord);
         emit({ type: 'datachannel-message', connectionId: record.id, label: channel.label, dir: 'out', preview: preview(payload) });
+        attachDecodeResult(
+          runDecoders({ kind: 'datachannel', connectionId: record.id, label: channel.label, dir: 'out' }, payload),
+          messageRecord,
+          'datachannel-message-decoded',
+          { connectionId: record.id, label: channel.label, dir: 'out' }
+        );
         return originalSend(payload);
       };
     }
@@ -367,9 +455,16 @@
           }
         }
         record.receivedCount++;
-        record.messages.push({ dir: 'in', ts: Date.now(), preview: preview(data) });
+        const messageRecord = { dir: 'in', ts: Date.now(), preview: preview(data) };
+        record.messages.push(messageRecord);
         if (record.messages.length > 200) record.messages.shift();
         emit({ type: 'websocket-message', socketId: id, dir: 'in', preview: preview(data) });
+        attachDecodeResult(
+          runDecoders({ kind: 'websocket', socketId: id, url: record.url, dir: 'in' }, data),
+          messageRecord,
+          'websocket-message-decoded',
+          { socketId: id, dir: 'in' }
+        );
       });
 
       return ws;
@@ -396,9 +491,16 @@
         if (result !== undefined) payload = result;
       }
       record.sentCount++;
-      record.messages.push({ dir: 'out', ts: Date.now(), preview: preview(payload) });
+      const messageRecord = { dir: 'out', ts: Date.now(), preview: preview(payload) };
+      record.messages.push(messageRecord);
       if (record.messages.length > 200) record.messages.shift();
       emit({ type: 'websocket-message', socketId: record.id, dir: 'out', preview: preview(payload) });
+      attachDecodeResult(
+        runDecoders({ kind: 'websocket', socketId: record.id, url: record.url, dir: 'out' }, payload),
+        messageRecord,
+        'websocket-message-decoded',
+        { socketId: record.id, dir: 'out' }
+      );
       return originalWsSend.call(this, payload);
     };
   }
@@ -961,6 +1063,7 @@
     injectDataChannelMessage,
     setDataChannelInterceptor,
     clearDataChannelInterceptor,
+    registerDecoder,
     setWebSocketInterceptor,
     clearWebSocketInterceptor,
     injectWebSocketMessage,

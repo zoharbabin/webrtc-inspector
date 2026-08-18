@@ -42,6 +42,7 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` c
 | `setFakeCam({width,height,color,text,fps})` / `clearFakeCam()` | Synthetic canvas video source for `getUserMedia({video:true})` / restore real camera. |
 | `injectDataChannelMessage(connId, label, data)` | Send *from* that connection's channel, as if that peer sent it. |
 | `setDataChannelInterceptor(fn)` / `clearDataChannelInterceptor()` | `fn(dir, {connId, label, data})` on every send/deliver. Return new data to rewrite, `false` to block, nothing to pass through. Opt-in — inert until called. |
+| `registerDecoder(matcher, decodeFn)` | Consumer-supplied protocol decoding for data-channel/WebSocket messages, in place of raw string/byte-count previews. `matcher(meta) -> boolean` where `meta = {kind: 'datachannel'\|'websocket', connectionId?, socketId?, label?, url?, dir: 'in'\|'out'}`; first registered match wins. `decodeFn(normalizedData, meta) -> any` (`normalizedData` is `string \| ArrayBuffer`, `Blob` pre-normalized) — may return a value or a Promise. Runs after any interceptor, so a decoder sees the data as actually delivered/sent. Returns an unsubscribe closure, same convention as `onEvent`. |
 | `setWebSocketInterceptor(fn)` / `clearWebSocketInterceptor()` | Same pattern as above, for every tracked `WebSocket`: `fn(dir, {socketId, url, data})`. |
 | `injectWebSocketMessage(socketId, data)` | Synthetic incoming `message` event — no real network involved. |
 | `sendOnWebSocket(socketId, data)` | Real `send()` on a tracked socket, as if the app called it. |
@@ -72,6 +73,7 @@ Both are approximations for a live diagnostic signal, not certified MOS/VMAF mea
 
 ## Known limitations
 
+- **Decoded message payloads are not redacted**: `registerDecoder`'s output is capped in size like `preview()` but not scrubbed of secrets. A fully decoded payload (parsed protobuf, vendor framing) can surface more PII/tokens/user data in `getSnapshot()`/`recentLog`/exported bundles than a truncated string preview would. Scrubbing decoder output of secrets before persisting or sharing a snapshot is the caller's responsibility.
 - **SFU app-message channels**: some SFU transports (e.g. mediasoup-client) route control-plane messages over a signaling `WebSocket` instead of a literal `RTCDataChannel` — invisible to pure `RTCDataChannel` instrumentation. Covered here since `WebSocket` is patched too.
 - **Unpatched transports**: WebTransport, SSE, or a native non-browser channel carrying control-plane traffic stays invisible. Open category, not exhaustively covered.
 - **Timing-dependent**: instrumentation only sees connections/tracks/channels created *after* the patch runs — see Usage for injection-timing caveats per method.
