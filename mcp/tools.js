@@ -6,7 +6,7 @@
 // replaceOutgoingTrack, getFakeMicTrack) can't cross that boundary and are not
 // exposed here — use core/webrtc-inspector.js directly in-page for those.
 const { z } = require('zod');
-const { getPage } = require('./browser');
+const { getPage, navigate } = require('./browser');
 
 function textResult(value) {
   return { content: [{ type: 'text', text: JSON.stringify(value === undefined ? { ok: true } : value) }] };
@@ -32,6 +32,27 @@ function registerSimpleTool(server, cdpEndpoint, name, description, inputSchema,
 }
 
 function registerTools(server, cdpEndpoint) {
+  // #78 — points the self-launched or attached browser at a target page.
+  // Works even with no instrumented page yet: creates one and pre-injects
+  // core/webrtc-inspector.js via addInitScript rather than erroring like
+  // every other tool here does through getPage().
+  server.registerTool(
+    'wrtc_navigate',
+    {
+      description:
+        'Navigate the current page (self-launched or attached browser) to url, creating and pre-instrumenting a page first if none exists yet.',
+      inputSchema: { url: z.string() },
+    },
+    async ({ url }) => {
+      try {
+        await navigate(cdpEndpoint, url);
+        return textResult({ navigated: true, url });
+      } catch (err) {
+        return errorResult(err);
+      }
+    }
+  );
+
   registerSimpleTool(
     server,
     cdpEndpoint,
