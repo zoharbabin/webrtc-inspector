@@ -100,6 +100,8 @@
       remoteCandidates: [],
       lastLocalSdp: null,
       lastRemoteSdp: null,
+      selectedCandidateType: null,
+      candidateTypeFlips: [],
       pc,
     };
     connectionsById.set(id, record);
@@ -418,13 +420,14 @@
         const stats = await record.pc.getStats();
         const summary = { ts: Date.now(), reports: [] };
         stats.forEach((report) => {
-          if (['inbound-rtp', 'outbound-rtp', 'remote-inbound-rtp', 'remote-outbound-rtp', 'candidate-pair', 'codec'].includes(report.type)) {
+          if (['inbound-rtp', 'outbound-rtp', 'remote-inbound-rtp', 'remote-outbound-rtp', 'candidate-pair', 'local-candidate', 'codec'].includes(report.type)) {
             summary.reports.push(report);
           }
         });
         record.statsHistory.push(summary);
         if (record.statsHistory.length > config.maxStatsHistory) record.statsHistory.shift();
         updateLocalTrackQuality(record, summary.reports);
+        updateCandidateTypeFlip(record, summary.reports);
       } catch (_) { /* getStats can race a just-closed connection */ }
     }, config.statsIntervalMs);
   }
@@ -448,6 +451,26 @@
       const report = mid != null ? outboundByMid.get(mid) : null;
       trackRecord.qualityLimitationReason = (report && report.qualityLimitationReason) || null;
     });
+  }
+
+  // A silent mid-call flip between a direct/reflexive (srflx) path and a TURN
+  // relay path is a common, hard-to-spot cause of a sudden RTT/quality change —
+  // flag it specifically, rather than every candidate-type transition (e.g. the
+  // expected host -> srflx settling during initial ICE negotiation).
+  function updateCandidateTypeFlip(record, reports) {
+    const selectedPair = reports.find((r) => r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded')
+      || reports.find((r) => r.type === 'candidate-pair' && r.state === 'succeeded');
+    if (!selectedPair) return;
+    const localCandidate = reports.find((r) => r.type === 'local-candidate' && r.id === selectedPair.localCandidateId);
+    const type = localCandidate && localCandidate.candidateType;
+    if (!type) return;
+    const previous = record.selectedCandidateType;
+    if (previous && previous !== type && ['srflx', 'relay'].includes(previous) && ['srflx', 'relay'].includes(type)) {
+      const flip = { ts: Date.now(), from: previous, to: type };
+      record.candidateTypeFlips.push(flip);
+      emit({ type: 'candidate-type-flip', connectionId: record.id, from: previous, to: type });
+    }
+    record.selectedCandidateType = type;
   }
 
   // ---- remote audio metering ("listen" tap) ------------------------------
@@ -710,6 +733,8 @@
         latestStats: r.statsHistory[r.statsHistory.length - 1] || null,
         localCandidateTypes: r.localCandidates.map((c) => c.type),
         remoteCandidateTypes: r.remoteCandidates.map((c) => c.type),
+        selectedCandidateType: r.selectedCandidateType,
+        candidateTypeFlips: r.candidateTypeFlips,
         localSdpSummary: r.lastLocalSdp && r.lastLocalSdp.summary,
         remoteSdpSummary: r.lastRemoteSdp && r.lastRemoteSdp.summary,
       })),
