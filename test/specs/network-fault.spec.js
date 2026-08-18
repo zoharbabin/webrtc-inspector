@@ -92,4 +92,60 @@ test.describe('Network-fault primitives', () => {
 
     expect(result).toBe('INTERCEPTOR-STILL-ACTIVE');
   });
+
+  test("simulateNetworkLoss with targets: ['media'] drops real outgoing video frames, then auto-restores", async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
+      await window.testHelpers.createLoopbackSession('media-loss', async (pcA) => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach((t) => pcA.addTrack(t, stream));
+      });
+      const loss = window.__webrtcInspector.simulateNetworkLoss(10000, { targets: ['media'] });
+      await window.testHelpers.wait(500);
+      const statsDuring = await window.__pcA.getStats();
+      let duringPackets = 0;
+      statsDuring.forEach((s) => { if (s.type === 'outbound-rtp' && s.kind === 'video') duringPackets += s.packetsSent || 0; });
+      loss.stop();
+      await loss.done;
+      await window.testHelpers.wait(500);
+      const statsAfter = await window.__pcA.getStats();
+      let afterPackets = 0;
+      statsAfter.forEach((s) => { if (s.type === 'outbound-rtp' && s.kind === 'video') afterPackets += s.packetsSent || 0; });
+      return { duringPackets, afterPackets };
+    });
+    expect(result.duringPackets).toBe(0);
+    expect(result.afterPackets).toBeGreaterThan(0);
+  });
+
+  test("simulateNetworkLoss with targets: ['media'] restores a previously active setMediaFaultInjector after the outage", async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      window.__calls = 0;
+      window.__webrtcInspector.setMediaFaultInjector(null, 'video', () => { window.__calls++; });
+      await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
+      await window.testHelpers.createLoopbackSession('media-loss-compose', async (pcA) => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach((t) => pcA.addTrack(t, stream));
+      });
+      await window.testHelpers.waitFor(() => window.__calls > 0);
+      const loss = window.__webrtcInspector.simulateNetworkLoss(300, { targets: ['media'] });
+      await loss.done;
+      const callsRightAfterRestore = window.__calls;
+      await window.testHelpers.wait(300);
+      const activeAfter = window.__webrtcInspector.getSnapshot().mediaFaultInjectorActive;
+      return { grew: window.__calls > callsRightAfterRestore, activeAfter };
+    });
+    expect(result.grew).toBe(true);
+    expect(result.activeAfter).toBe(true);
+  });
+
+  test('does not block websocket/datachannel targets when only media is requested', async ({ page }) => {
+    await page.evaluate(() => window.testHelpers.createLoopbackSession());
+    const active = await page.evaluate(async () => {
+      const loss = window.__webrtcInspector.simulateNetworkLoss(300, { targets: ['media'] });
+      window.__dcA.send('still-flows');
+      loss.stop();
+      return window.__dcA.readyState;
+    });
+    expect(active).toBe('open');
+  });
 });
