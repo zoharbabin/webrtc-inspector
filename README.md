@@ -6,7 +6,9 @@ Framework-agnostic WebRTC inspection and fault injection. Patches standard brows
 
 ## What it patches
 
-`RTCPeerConnection` (tracks, transceivers, SDP, ICE, data channels), `RTCDataChannel.send`, `RTCRtpSender.replaceTrack`, `MediaStreamTrack.stop`, `WebSocket`, `getUserMedia`/`getDisplayMedia`.
+`RTCPeerConnection` (tracks, transceivers, SDP, ICE, data channels), `RTCDataChannel.send`, `RTCRtpSender.replaceTrack`, `MediaStreamTrack.stop`, `WebSocket`, `fetch`/`XMLHttpRequest`, `getUserMedia`/`getDisplayMedia`.
+
+`fetch`/`XMLHttpRequest` capture covers HTTP-based signaling (WHIP/WHEP and similar SDP-over-HTTP) that isn't visible to the `RTCPeerConnection`/`WebSocket` patches — request/response previews land in `getSnapshot().httpRequests`, and `simulateNetworkLoss({targets: ['http']})` can fail them on demand.
 
 Must run before the page's own scripts grab references to these globals — see Usage.
 
@@ -28,7 +30,7 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` c
 
 | Method | Does |
 |---|---|
-| `getSnapshot(opts?)` | Full state: connections, tracks, SDP/ICE summaries, data channels, WebSockets, stats, flags, last 100 log entries. JSON-serializable. `opts.detail: 'concise'` drops the raw stats report, log, and message-history dumps — keeps derived metrics (`qualityScore`, `avSyncDeltaMs`, candidate types, etc.) for routine health checks at a fraction of the tokens. Defaults to `'detailed'` (today's full output). |
+| `getSnapshot(opts?)` | Full state: connections, tracks, SDP/ICE summaries, data channels, WebSockets, HTTP requests, stats, flags, last 100 log entries. JSON-serializable. `opts.detail: 'concise'` drops the raw stats report, log, and message/request-body dumps — keeps derived metrics (`qualityScore`, `avSyncDeltaMs`, candidate types, etc.) for routine health checks at a fraction of the tokens. Defaults to `'detailed'` (today's full output). |
 | `getSnapshotDiff(before, after)` | Pure function over two `getSnapshot()` outputs — structured delta: connections/WebSockets added/removed, and for ones present in both, only the fields that changed (ICE/connection/signaling state, track/data-channel counts, `qualityScore`, `avSyncDeltaMs`, candidate type, socket counts). No new instrumentation; works with either detail mode. |
 | `onEvent(fn)` | Subscribe to the live event log. |
 | `clearLog()` | Drop accumulated log/stats history. |
@@ -47,7 +49,7 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` c
 | `injectWebSocketMessage(socketId, data)` | Synthetic incoming `message` event — no real network involved. |
 | `sendOnWebSocket(socketId, data)` | Real `send()` on a tracked socket, as if the app called it. |
 | `killConnection(connId)` | Real `pc.close()` — genuine abrupt transport death. Tests cold-reconnect, not blip recovery. |
-| `simulateNetworkLoss(durationMs, {targets})` | Real dropped sends on `websocket`/`datachannel` (default both) for `durationMs`, then auto-restore. Composes with any active interceptor. Returns `{stop, done}`. |
+| `simulateNetworkLoss(durationMs, {targets})` | Real dropped sends on `websocket`/`datachannel` (default both) for `durationMs`, then auto-restore. Add `'http'` to `targets` to also fail every `fetch`/`XMLHttpRequest` for the duration (real rejection/error, request never sent) — covers HTTP-polled signaling (WHIP/WHEP). Composes with any active interceptor. Returns `{stop, done}`. |
 
 Every track from patched `getUserMedia`/`getDisplayMedia` is tagged (`fake-mic`/`real-device`/`display-capture`/`fake-cam`) and the tag follows it into connection logging — `getSnapshot()` shows exactly which connection consumed which source.
 

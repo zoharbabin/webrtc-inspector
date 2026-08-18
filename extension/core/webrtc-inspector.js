@@ -30,7 +30,7 @@
     return;
   }
 
-  const config = { statsIntervalMs: 2000, maxLogEntries: 5000, maxStatsHistory: 60, levelIntervalMs: 250, maxDecodedPreviewChars: 500 };
+  const config = { statsIntervalMs: 2000, maxLogEntries: 5000, maxStatsHistory: 60, levelIntervalMs: 250, maxDecodedPreviewChars: 500, maxHttpHistory: 200 };
   const connectionsById = new Map(); // id -> record
   const recordByPc = new WeakMap(); // pc -> record
   const trackTagById = new WeakMap(); // MediaStreamTrack -> {tag, sourceCallId}
@@ -520,6 +520,101 @@
     record.ws.send(data);
   }
 
+  // ---- HTTP (fetch/XHR): capture + 'http' target for simulateNetworkLoss ----
+  //
+  // WHIP/WHEP and similar SDP-over-HTTP signaling isn't visible to
+  // RTCPeerConnection/WebSocket instrumentation — this covers that gap so
+  // getSnapshot() and simulateNetworkLoss({targets: ['http']}) reach it too.
+
+  const httpRequestsById = new Map(); // id -> record, insertion-ordered for eviction
+  let nextHttpId = 1;
+  let httpBlocked = false;
+
+  function recordHttpRequest(method, url) {
+    const id = nextHttpId++;
+    const record = {
+      id, method, url: String(url), state: 'pending', statusCode: null,
+      requestPreview: null, responsePreview: null, startedAt: Date.now(), completedAt: null,
+    };
+    httpRequestsById.set(id, record);
+    if (httpRequestsById.size > config.maxHttpHistory) {
+      httpRequestsById.delete(httpRequestsById.keys().next().value);
+    }
+    emit({ type: 'http-request-start', httpId: id, method, url: record.url });
+    return record;
+  }
+
+  function finishHttpRequest(record, { statusCode, error, responseBody }) {
+    record.state = error ? 'error' : 'complete';
+    record.statusCode = statusCode != null ? statusCode : null;
+    record.completedAt = Date.now();
+    if (error) record.error = String(error);
+    if (responseBody !== undefined) record.responsePreview = preview(responseBody);
+    emit(Object.assign(
+      { type: error ? 'http-error' : 'http-response', httpId: record.id, method: record.method, url: record.url },
+      error ? { error: String(error) } : { statusCode: record.statusCode }
+    ));
+  }
+
+  const OriginalFetch = window.fetch ? window.fetch.bind(window) : null;
+  if (OriginalFetch) {
+    window.fetch = function (input, init) {
+      const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+      const url = typeof input === 'string' || input instanceof URL ? String(input) : (input && input.url) || String(input);
+      const record = recordHttpRequest(method, url);
+      record.requestPreview = preview((init && init.body) || null);
+
+      if (httpBlocked) {
+        finishHttpRequest(record, { error: 'blocked by simulateNetworkLoss' });
+        emit({ type: 'http-request-blocked', httpId: record.id, method, url: record.url });
+        return Promise.reject(new TypeError('Failed to fetch: simulated network loss'));
+      }
+
+      return OriginalFetch(input, init).then(
+        (response) => {
+          response.clone().text().then(
+            (text) => finishHttpRequest(record, { statusCode: response.status, responseBody: text }),
+            () => finishHttpRequest(record, { statusCode: response.status })
+          );
+          return response;
+        },
+        (err) => { finishHttpRequest(record, { error: err }); throw err; }
+      );
+    };
+  }
+
+  const OriginalXHR = window.XMLHttpRequest;
+  if (OriginalXHR) {
+    const OriginalXHROpen = OriginalXHR.prototype.open;
+    const OriginalXHRSend = OriginalXHR.prototype.send;
+
+    OriginalXHR.prototype.open = function (method, url, ...rest) {
+      this.__inspectorMethod = String(method || 'GET').toUpperCase();
+      this.__inspectorUrl = url;
+      return OriginalXHROpen.call(this, method, url, ...rest);
+    };
+
+    OriginalXHR.prototype.send = function (body) {
+      const record = recordHttpRequest(this.__inspectorMethod || 'GET', this.__inspectorUrl || '');
+      record.requestPreview = preview(body || null);
+
+      if (httpBlocked) {
+        finishHttpRequest(record, { error: 'blocked by simulateNetworkLoss' });
+        emit({ type: 'http-request-blocked', httpId: record.id, method: record.method, url: record.url });
+        setTimeout(() => this.dispatchEvent(new Event('error')), 0);
+        return;
+      }
+
+      this.addEventListener('loadend', () => {
+        if (!this.status) { finishHttpRequest(record, { error: 'network error' }); return; }
+        let responseBody;
+        try { responseBody = this.responseType === '' || this.responseType === 'text' ? this.responseText : `<${this.responseType} response>`; } catch (_) { /* responseText throws for some responseTypes mid-flight */ }
+        finishHttpRequest(record, { statusCode: this.status, responseBody });
+      });
+      return OriginalXHRSend.call(this, body);
+    };
+  }
+
   // ---- stats polling ----------------------------------------------------
 
   function startStatsPolling(record) {
@@ -881,12 +976,15 @@
     const opts = Object.assign({ targets: ['websocket', 'datachannel'] }, options);
     const wantWs = opts.targets.includes('websocket');
     const wantDc = opts.targets.includes('datachannel');
+    const wantHttp = opts.targets.includes('http');
     const priorWsInterceptor = webSocketInterceptor;
     const priorDcInterceptor = dataChannelInterceptor;
+    const priorHttpBlocked = httpBlocked;
     let stopped = false;
 
     if (wantWs) webSocketInterceptor = () => false;
     if (wantDc) dataChannelInterceptor = () => false;
+    if (wantHttp) httpBlocked = true;
     emit({ type: 'network-loss-start', durationMs, targets: opts.targets });
 
     let resolveDone;
@@ -897,6 +995,7 @@
       stopped = true;
       if (wantWs) webSocketInterceptor = priorWsInterceptor;
       if (wantDc) dataChannelInterceptor = priorDcInterceptor;
+      if (wantHttp) httpBlocked = priorHttpBlocked;
       clearTimeout(timer);
       emit({ type: 'network-loss-end', targets: opts.targets });
       resolveDone();
@@ -965,6 +1064,17 @@
         receivedCount: r.receivedCount,
         ...(concise ? {} : { lastMessages: r.messages.slice(-10) }),
       })),
+      httpRequests: Array.from(httpRequestsById.values()).map((r) => ({
+        id: r.id,
+        method: r.method,
+        url: r.url,
+        state: r.state,
+        statusCode: r.statusCode,
+        startedAt: r.startedAt,
+        completedAt: r.completedAt,
+        ...(concise ? {} : { requestPreview: r.requestPreview, responsePreview: r.responsePreview }),
+      })),
+      httpBlocked,
       fakeMicActive: !!fakeMic,
       fakeCamActive: !!fakeCam,
       dataChannelInterceptorActive: !!dataChannelInterceptor,
