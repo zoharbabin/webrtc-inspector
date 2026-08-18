@@ -54,6 +54,12 @@ test.describe('npm package contents', () => {
     expect(walk(pkg)).toEqual([]);
   });
 
+  test('the Claude Code skill ships in the tarball, not just the repo', () => {
+    const skillPath = path.join(pkg, '.claude', 'skills', 'webrtc-inspector', 'SKILL.md');
+    expect(fs.existsSync(skillPath)).toBe(true);
+    expect(fs.statSync(skillPath).size).toBeGreaterThan(0);
+  });
+
   test('every file the extension manifest references is present', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(pkg, 'extension', 'manifest.json'), 'utf8'));
     const referenced = [
@@ -93,5 +99,30 @@ test.describe('README MCP client config blocks', () => {
 
   test('the claude mcp add one-liner uses the real package + bin name', () => {
     expect(README).toContain(`--package=${pkgJson.name} ${binName}`);
+  });
+});
+
+// #82 — the skill file and its README copy-step instructions are two places
+// that name the same package/path; nothing else catches drift if either one
+// is renamed on its own.
+test.describe('Claude Code skill', () => {
+  const REPO_ROOT_ = path.join(__dirname, '..', '..');
+  const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT_, 'package.json'), 'utf8'));
+  const skillPath = path.join(REPO_ROOT_, '.claude', 'skills', 'webrtc-inspector', 'SKILL.md');
+  const README = fs.readFileSync(path.join(REPO_ROOT_, 'README.md'), 'utf8');
+
+  test('package.json "files" ships .claude so it reaches npm installs', () => {
+    expect(pkgJson.files).toContain('.claude');
+  });
+
+  test('SKILL.md exists with name + description frontmatter', () => {
+    const content = fs.readFileSync(skillPath, 'utf8');
+    const frontmatter = content.match(/^---\n([\s\S]*?)\n---/)[1];
+    expect(frontmatter).toMatch(/^name: webrtc-inspector$/m);
+    expect(frontmatter).toMatch(/^description: .+$/m);
+  });
+
+  test("README's copy-step command points at the real package name and skill path", () => {
+    expect(README).toContain(`node_modules/${pkgJson.name}/.claude/skills/webrtc-inspector/SKILL.md`);
   });
 });
