@@ -6,6 +6,31 @@
 
 const POLL_MS = 1000;
 let lastAudioB64 = null;
+const sparklineHistoryByConnection = new Map(); // connectionId -> {series, counters}, see panel-sparkline.js
+
+const SPARKLINE_METRICS = [
+  { key: 'bitrateKbps', label: 'kbps', fmt: (v) => v.toFixed(0) },
+  { key: 'rttMs', label: 'RTT ms', fmt: (v) => v.toFixed(0) },
+  { key: 'jitterMs', label: 'jitter ms', fmt: (v) => v.toFixed(1) },
+  { key: 'lossPct', label: 'loss %', fmt: (v) => v.toFixed(1) },
+];
+const SPARKLINE_W = 80;
+const SPARKLINE_H = 24;
+
+function renderSparklines(connectionId, latestStats) {
+  if (!latestStats) return '';
+  const series = updateSparklineHistory(sparklineHistoryByConnection, connectionId, latestStats.reports, latestStats.ts);
+  return `<div class="sparklines">${SPARKLINE_METRICS.map(({ key, label, fmt }) => {
+    const samples = series[key] || [];
+    const last = [...samples].reverse().find((s) => typeof s.value === 'number');
+    const points = sparklinePoints(samples, SPARKLINE_W, SPARKLINE_H);
+    return `
+      <div class="sparkline">
+        <svg width="${SPARKLINE_W}" height="${SPARKLINE_H}">${points ? `<polyline points="${points}" fill="none" stroke="#4ec9b0" stroke-width="1"/>` : ''}</svg>
+        <span class="label">${label}: ${last ? fmt(last.value) : '—'}</span>
+      </div>`;
+  }).join('')}</div>`;
+}
 
 function evalInPage(expr) {
   return new Promise((resolve, reject) => {
@@ -38,6 +63,7 @@ function renderSnapshot(snap) {
         <div><b>#${c.id}</b> <span class="badge ${badgeClass(c.state.connectionState)}">${c.state.connectionState}</span>
           <span class="badge ${badgeClass(c.state.iceConnectionState)}">ice: ${c.state.iceConnectionState}</span></div>
       </div>
+      ${renderSparklines(c.id, c.latestStats)}
       <table>
         <tr><th>Local tracks</th><td>${c.localTracks.map((t) => `${t.kind}${t.sourceTag ? ` <span class="badge">${t.sourceTag}</span>` : ''}${t.status === 'ended' ? ` <span class="badge failed">ended</span>` : ''}`).join(', ') || '—'}</td></tr>
         <tr><th>Remote tracks</th><td>${c.remoteTracks.map((t) => `${t.kind}${typeof t.level === 'number' ? ` (level ${t.level.toFixed(2)})` : ''}`).join(', ') || '—'}</td></tr>
