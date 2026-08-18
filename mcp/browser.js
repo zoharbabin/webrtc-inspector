@@ -70,6 +70,14 @@ async function findInspectedPage(browser) {
   return null;
 }
 
+async function firstAnyPage(browser) {
+  for (const context of browser.contexts()) {
+    const pages = context.pages();
+    if (pages.length) return pages[0];
+  }
+  return null;
+}
+
 async function ensureSelfLaunched() {
   if (selfLaunched && cachedBrowser && cachedBrowser.isConnected()) return selfLaunchedPage;
   // Headed by default so a human on the same machine can watch (mirrors why
@@ -146,4 +154,41 @@ async function navigate(cdpEndpoint, url) {
   return page;
 }
 
-module.exports = { getPage, navigate };
+const DISCONNECTED_STATUS_FIELDS = { pageFound: false, pageUrl: null, inspectorLoaded: false, inspectorVersion: null };
+
+async function inspectPage(page) {
+  if (!page) return { ...DISCONNECTED_STATUS_FIELDS };
+  const pageUrl = page.url();
+  const inspector = await page
+    .evaluate(() => {
+      const insp = window.__webrtcInspector;
+      return insp ? { loaded: true, version: insp.version || null } : { loaded: false, version: null };
+    })
+    .catch(() => ({ loaded: false, version: null }));
+  return { pageFound: true, pageUrl, inspectorLoaded: inspector.loaded, inspectorVersion: inspector.version };
+}
+
+// #79 — sanity-check tool meant to be an agent's first call. Reuses getPage's
+// connect logic (attach, reporting the self-launch case if one already
+// happened) but never falls back to launching a browser itself, and never
+// throws: a totally unreachable endpoint is just mode: 'disconnected', not
+// an error, so callers don't need a try/catch around this one.
+async function getStatus(cdpEndpoint) {
+  try {
+    if (selfLaunched && cachedBrowser && cachedBrowser.isConnected()) {
+      return { cdpEndpoint, mode: 'self-launched', ...(await inspectPage(selfLaunchedPage)) };
+    }
+    let browser;
+    try {
+      browser = await attachedBrowser(cdpEndpoint);
+    } catch {
+      return { cdpEndpoint, mode: 'disconnected', ...DISCONNECTED_STATUS_FIELDS };
+    }
+    const page = (await findInspectedPage(browser)) || (await firstAnyPage(browser));
+    return { cdpEndpoint, mode: 'attached', ...(await inspectPage(page)) };
+  } catch {
+    return { cdpEndpoint, mode: 'disconnected', ...DISCONNECTED_STATUS_FIELDS };
+  }
+}
+
+module.exports = { getPage, navigate, getStatus };
