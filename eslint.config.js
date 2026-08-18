@@ -78,6 +78,23 @@ module.exports = [
     },
   },
   {
+    // mcp/*.js mixes Node (require/module/process) and browser globals
+    // (page.evaluate callback bodies run in the inspected page, not Node).
+    files: ['mcp/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2021,
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly',
+        module: 'readonly',
+        __dirname: 'readonly',
+        console: 'readonly',
+        process: 'readonly',
+        window: 'readonly',
+      },
+    },
+  },
+  {
     files: ['test/fixtures/**/*.js'],
     languageOptions: {
       ecmaVersion: 2021,

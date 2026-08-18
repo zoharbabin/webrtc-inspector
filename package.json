@@ -3,9 +3,13 @@
   "version": "1.4.0",
   "description": "Framework-agnostic live WebRTC inspection and fault injection: peer connections, tracks, data channels, WebSockets, fake mic/camera, and real transport/signaling fault injection for reconnect testing.",
   "main": "core/webrtc-inspector.js",
+  "bin": {
+    "webrtc-inspector-mcp": "mcp/server.js"
+  },
   "files": [
     "core",
     "extension",
+    "mcp",
     "test",
     "README.md",
     "LICENSE"
@@ -16,7 +20,8 @@
     "chrome-extension",
     "testing",
     "debugging",
-    "instrumentation"
+    "instrumentation",
+    "mcp"
   ],
   "author": "Zohar Babin",
   "license": "MIT",
@@ -38,5 +43,10 @@
     "@eslint/js": "^9.38.0",
     "@playwright/test": "^1.62.1",
     "eslint": "^9.38.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "playwright-core": "^1.62.1",
+    "zod": "^3.25.76"
   }
 }
