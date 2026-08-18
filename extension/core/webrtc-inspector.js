@@ -1107,6 +1107,26 @@
     return sender.replaceTrack(track);
   }
 
+  // Standard WebRTC pattern: read current encoding params, mutate, write
+  // back via setParameters() — no interception needed, real congestion
+  // control still runs but is capped by whatever's passed here. Only the
+  // fields present in caps are touched; omit a field to leave it as-is.
+  function capEncoding(connectionId, kind, caps) {
+    const record = connectionsById.get(connectionId);
+    if (!record) throw new Error(`No connection with id ${connectionId}`);
+    const sender = record.pc.getSenders().find((s) => s.track && s.track.kind === kind);
+    if (!sender) throw new Error(`No active ${kind} sender on connection ${connectionId}`);
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+    params.encodings.forEach((encoding) => {
+      if ('maxBitrate' in caps) encoding.maxBitrate = caps.maxBitrate;
+      if ('maxFramerate' in caps) encoding.maxFramerate = caps.maxFramerate;
+      if ('scaleResolutionDownBy' in caps) encoding.scaleResolutionDownBy = caps.scaleResolutionDownBy;
+    });
+    if ('degradationPreference' in caps) params.degradationPreference = caps.degradationPreference;
+    return sender.setParameters(params);
+  }
+
   function injectDataChannelMessage(connectionId, label, data) {
     const record = connectionsById.get(connectionId);
     if (!record) throw new Error(`No connection with id ${connectionId}`);
@@ -1328,6 +1348,7 @@
     clearFakeCam,
     getRemoteTrackStream,
     replaceOutgoingTrack,
+    capEncoding,
     injectDataChannelMessage,
     setDataChannelInterceptor,
     clearDataChannelInterceptor,
