@@ -25,6 +25,7 @@
   h2 { font-size: 13px; margin: 12px 0 4px; color: var(--accent); }
   .conn { border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; }
   .conn.closed { opacity: 0.5; }
+  .stale, .log-row.stale { opacity: 0.45; }
   .row { display: flex; gap: 8px; }
   .row > div { flex: 1; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
@@ -60,6 +61,7 @@
 </head>
 <body>
   <div id="status">connecting…</div>
+  <div class="field"><label style="width: auto;"><input type="checkbox" id="preserveLogChk"> Preserve log across reloads</label></div>
   <div id="connections"></div>
   <h2>WebSockets</h2>
   <div id="websockets"></div>
@@ -139,6 +141,7 @@
   <script src="panel-clipboard.js"></script>
   <script src="panel-timeline.js"></script>
   <script src="panel-theme.js"></script>
+  <script src="panel-preserve-log.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>

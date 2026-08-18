@@ -31,6 +31,28 @@ if (chrome.devtools && chrome.devtools.panels) {
   if (chrome.devtools.panels.onThemeChanged) chrome.devtools.panels.onThemeChanged.addListener(applyTheme);
 }
 
+// #31 — "Preserve log" toggle: window.__webrtcInspector's state resets on
+// every navigation (it lives in the inspected page), so we buffer the last
+// polled snapshot per page load and merge it back in while the toggle is on.
+let preserveLog = false;
+let pageHistory = [];
+let pageGen = 0;
+let lastSnap = null;
+if (chrome.devtools && chrome.devtools.network && chrome.devtools.network.onNavigated) {
+  chrome.devtools.network.onNavigated.addListener(() => {
+    if (preserveLog) {
+      const { history } = bufferGeneration(pageHistory, lastSnap, pageGen);
+      pageHistory = history;
+    }
+    pageGen += 1;
+    lastSnap = null;
+  });
+}
+document.getElementById('preserveLogChk').addEventListener('change', (e) => {
+  preserveLog = e.target.checked;
+  if (!preserveLog) pageHistory = [];
+});
+
 function renderSparklines(connectionId, latestStats) {
   if (!latestStats) return '';
   const series = updateSparklineHistory(sparklineHistoryByConnection, connectionId, latestStats.reports, latestStats.ts);
@@ -122,10 +144,11 @@ function renderSnapshot(snap) {
   }
 
   el.innerHTML = snap.connections.map((c) => `
-    <div class="conn ${c.closed ? 'closed' : ''}">
+    <div class="conn ${c.closed ? 'closed' : ''} ${c._stale ? 'stale' : ''}">
       <div class="row">
         <div><b>#${c.id}</b> <span class="badge ${badgeClass(c.state.connectionState)}">${c.state.connectionState}</span>
-          <span class="badge ${badgeClass(c.state.iceConnectionState)}">ice: ${c.state.iceConnectionState}</span></div>
+          <span class="badge ${badgeClass(c.state.iceConnectionState)}">ice: ${c.state.iceConnectionState}</span>
+          ${c._stale ? `<span class="badge">page load #${c._gen}</span>` : ''}</div>
       </div>
       ${renderSparklines(c.id, c.latestStats)}
       <table>
@@ -144,9 +167,10 @@ function renderSnapshot(snap) {
 
   const wsEl = document.getElementById('websockets');
   wsEl.innerHTML = snap.webSockets.map((s) => `
-    <div class="conn ${s.state === 'closed' ? 'closed' : ''}">
+    <div class="conn ${s.state === 'closed' ? 'closed' : ''} ${s._stale ? 'stale' : ''}">
       <div class="row">
-        <div><b>ws#${s.id}</b> <span class="badge ${badgeClass(s.state)}">${s.state}</span> ${escapeHtml(s.url)}</div>
+        <div><b>ws#${s.id}</b> <span class="badge ${badgeClass(s.state)}">${s.state}</span> ${escapeHtml(s.url)}
+          ${s._stale ? `<span class="badge">page load #${s._gen}</span>` : ''}</div>
       </div>
       <table>
         <tr><th>Sent / received</th><td>${s.sentCount} / ${s.receivedCount}</td></tr>
@@ -159,7 +183,7 @@ function renderSnapshot(snap) {
   if (logEl) {
     const entries = (snap.recentLog || []).slice(-20).reverse();
     logEl.innerHTML = entries.map((entry) => `
-      <div class="log-row">${new Date(entry.ts).toLocaleTimeString()} · ${escapeHtml(entry.type)}${entry.connectionId !== undefined ? ` · #${entry.connectionId}` : ''}
+      <div class="log-row ${entry._stale ? 'stale' : ''}">${new Date(entry.ts).toLocaleTimeString()} · ${escapeHtml(entry.type)}${entry.connectionId !== undefined ? ` · #${entry.connectionId}` : ''}${entry._stale ? ` <span class="badge">page load #${entry._gen}</span>` : ''}
         <button class="copy-btn" data-copy-idx="${registerCopyTarget(entry)}">Copy</button></div>
     `).join('') || '<i>no events yet</i>';
   }
@@ -191,7 +215,8 @@ function renderTimeline(recentLog) {
 async function poll() {
   try {
     const snap = await evalInPage('window.__webrtcInspector && window.__webrtcInspector.getSnapshot()');
-    renderSnapshot(snap);
+    if (snap) lastSnap = snap;
+    renderSnapshot(mergeSnapshotForRender(pageHistory, snap, preserveLog));
   } catch (err) {
     document.getElementById('status').textContent = 'eval failed: ' + (err && err.value ? err.value : JSON.stringify(err));
   }
