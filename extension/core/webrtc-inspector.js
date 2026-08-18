@@ -1217,6 +1217,60 @@
     return { stop: restore, done };
   }
 
+  // ---- named network-impairment presets ----------------------------------
+  //
+  // Wraps simulateNetworkLoss in labeled scenario presets — tc/netem-style
+  // named profiles instead of picking raw durations/targets by hand.
+  // pattern: 'full' is one continuous outage; 'flapping' alternates outage/
+  // recovery in flapIntervalMs steps for the total durationMs, modeling
+  // intermittent connectivity rather than a single clean drop.
+
+  const networkPresets = new Map([
+    ['home-wifi', { durationMs: 600, targets: ['websocket', 'datachannel'], pattern: 'full' }],
+    ['4g-train', { durationMs: 2500, targets: ['websocket', 'datachannel', 'media'], pattern: 'full' }],
+    ['congested-mobile', { durationMs: 3000, targets: ['websocket', 'datachannel'], pattern: 'flapping', flapIntervalMs: 400 }],
+  ]);
+
+  function registerNetworkPreset(name, presetConfig) { networkPresets.set(name, presetConfig); }
+
+  function simulateFlappingLoss(presetConfig) {
+    const flapIntervalMs = presetConfig.flapIntervalMs || 500;
+    const cycles = Math.max(1, Math.round(presetConfig.durationMs / (flapIntervalMs * 2)));
+    let stopped = false;
+    let currentStop = null;
+    let gapTimer = null;
+    let resolveDone;
+    const done = new Promise((resolve) => { resolveDone = resolve; });
+
+    function runCycle(i) {
+      if (stopped || i >= cycles) { resolveDone(); return; }
+      const outage = simulateNetworkLoss(flapIntervalMs, { targets: presetConfig.targets });
+      currentStop = outage.stop;
+      outage.done.then(() => {
+        if (stopped) return;
+        gapTimer = setTimeout(() => runCycle(i + 1), flapIntervalMs);
+      });
+    }
+    runCycle(0);
+
+    function stop() {
+      if (stopped) return;
+      stopped = true;
+      clearTimeout(gapTimer);
+      if (currentStop) currentStop();
+      resolveDone();
+    }
+    return { stop, done };
+  }
+
+  function simulateNetworkPreset(name) {
+    const presetConfig = networkPresets.get(name);
+    if (!presetConfig) throw new Error(`Unknown network preset: ${name}`);
+    emit({ type: 'network-preset-start', name, config: presetConfig });
+    if (presetConfig.pattern === 'flapping') return simulateFlappingLoss(presetConfig);
+    return simulateNetworkLoss(presetConfig.durationMs, { targets: presetConfig.targets });
+  }
+
   // ---- injection controls -----------------------------------------------
 
   function replaceOutgoingTrack(connectionId, kind, track) {
@@ -1549,6 +1603,8 @@
     killConnection,
     restartIce,
     simulateNetworkLoss,
+    simulateNetworkPreset,
+    registerNetworkPreset,
     onEvent: (cb) => { listeners.add(cb); return () => listeners.delete(cb); },
     clearLog: () => { log.length = 0; },
   };

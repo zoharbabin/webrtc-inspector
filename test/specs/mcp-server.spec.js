@@ -59,7 +59,14 @@ test.describe('MCP server tools', () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
     expect(names).toEqual(
-      expect.arrayContaining(['wrtc_get_snapshot', 'wrtc_kill_connection', 'wrtc_restart_ice', 'wrtc_simulate_network_loss'])
+      expect.arrayContaining([
+        'wrtc_get_snapshot',
+        'wrtc_kill_connection',
+        'wrtc_restart_ice',
+        'wrtc_simulate_network_loss',
+        'wrtc_register_network_preset',
+        'wrtc_simulate_network_preset',
+      ])
     );
   });
 
@@ -115,5 +122,20 @@ test.describe('MCP server tools', () => {
     await mcpPage.evaluate(() => window.testHelpers.createLoopbackSession('mcp-session-loss'));
     const result = await toolJson('wrtc_simulate_network_loss', { durationMs: 150, targets: ['datachannel'] });
     expect(result.completed).toBe(true);
+  });
+
+  test('wrtc_register_network_preset then wrtc_simulate_network_preset runs the registered preset to completion', async () => {
+    await mcpPage.evaluate(() => window.testHelpers.createLoopbackSession('mcp-session-preset'));
+    await callTool('wrtc_register_network_preset', {
+      name: 'mcp-test-preset',
+      config: { durationMs: 150, targets: ['datachannel'], pattern: 'full' },
+    });
+    const result = await toolJson('wrtc_simulate_network_preset', { name: 'mcp-test-preset' });
+    expect(result).toEqual({ completed: true, name: 'mcp-test-preset' });
+  });
+
+  test('wrtc_simulate_network_preset on an unknown name comes back as an MCP tool error', async () => {
+    const result = await callTool('wrtc_simulate_network_preset', { name: 'no-such-preset' });
+    expect(result.isError).toBe(true);
   });
 });
