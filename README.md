@@ -49,6 +49,15 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` c
 
 Every track from patched `getUserMedia`/`getDisplayMedia` is tagged (`fake-mic`/`real-device`/`display-capture`/`fake-cam`) and the tag follows it into connection logging — `getSnapshot()` shows exactly which connection consumed which source.
 
+### `qualityScore` (MOS-style, 1-5)
+
+`getSnapshot().connections[].qualityScore` is a single 1-5 number meant to answer "is this connection fine or bad" without RTP domain knowledge. It averages up to two sub-scores, each computed from stats already being polled — `null` when neither is available:
+
+- **Audio** — a simplified ITU-T G.107 E-model: effective latency (`RTT + jitter*2 + 10`) and packet loss feed an R-factor, converted to MOS via the standard cubic. Same constants as [rtpengine's implementation](https://telecom.altanai.com/2018/04/17/voip-call-metric-monitoring/) and [this write-up](https://stackoverflow.com/questions/54124329/is-there-a-formula-for-rating-webrtc-audio-quality-as-excellent-good-fair-or). Ignores codec-specific impairment and echo.
+- **Video** — no standardized equivalent exists, so this uses bits-delivered-per-pixel-per-frame (a common encoder-tuning heuristic: ~0.1 bpp is solidly good H.264/VP8, below ~0.01 bpp is visibly blocky) linearly mapped onto 1-5. Ignores content complexity and codec efficiency.
+
+Both are approximations for a live diagnostic signal, not certified MOS/VMAF measurements — use `qualityScore` to spot "this call is degrading," not to certify codec performance.
+
 ### Reconnect / fault-injection testing
 
 `browserContext.setOffline()` and DevTools' `Network.emulateNetworkConditions` don't touch already-flowing WebRTC UDP media — both act on the network-service layer, which WebRTC bypasses. There's no page-JS way to force transient packet loss on live media without OS-level control (`pfctl`/`tc`).
