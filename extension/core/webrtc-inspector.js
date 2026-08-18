@@ -1194,6 +1194,50 @@
     };
   }
 
+  // ---- capture / diff for regression fixtures --------------------------------
+  //
+  // captureEvents() snapshots the event stream as-is (shallow copy, so later
+  // mutation of the live log can't retroactively change a stored capture).
+  // diffCaptures() is a pure function over two captures — no new
+  // instrumentation — meant to answer "did this connection's event shape
+  // change between SDK versions": event-type counts, and the first index at
+  // which the two event-type sequences diverge (null if one is a clean
+  // prefix of the other, or they're identical).
+  function captureEvents() {
+    return { capturedAt: Date.now(), events: log.map((e) => ({ ...e })) };
+  }
+
+  function countByType(events) {
+    const counts = {};
+    events.forEach((e) => { counts[e.type] = (counts[e.type] || 0) + 1; });
+    return counts;
+  }
+
+  function diffCaptures(before, after) {
+    const countsBefore = countByType(before.events);
+    const countsAfter = countByType(after.events);
+    const eventTypeCounts = {};
+    new Set([...Object.keys(countsBefore), ...Object.keys(countsAfter)]).forEach((type) => {
+      const from = countsBefore[type] || 0;
+      const to = countsAfter[type] || 0;
+      if (from !== to) eventTypeCounts[type] = { from, to };
+    });
+
+    const typesBefore = before.events.map((e) => e.type);
+    const typesAfter = after.events.map((e) => e.type);
+    const minLength = Math.min(typesBefore.length, typesAfter.length);
+    let firstDivergenceIndex = null;
+    for (let i = 0; i < minLength; i++) {
+      if (typesBefore[i] !== typesAfter[i]) { firstDivergenceIndex = i; break; }
+    }
+
+    return {
+      eventTypeCounts,
+      sequenceLengths: { from: typesBefore.length, to: typesAfter.length },
+      firstDivergenceIndex,
+    };
+  }
+
   function fieldChange(before, after) {
     return before === after ? null : { from: before, to: after };
   }
@@ -1272,6 +1316,8 @@
     getSnapshot,
     getSnapshotDiff,
     exportBundle,
+    captureEvents,
+    diffCaptures,
     getSdp,
     setFakeMic,
     clearFakeMic,
