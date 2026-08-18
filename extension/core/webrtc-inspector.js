@@ -54,6 +54,7 @@
   let suggestDecoder = null; // (payload, meta) => any | Promise<any> — single active advisory hook, mirrors ws/dc interceptors
   let mediaFaultInjector = null; // {connId, kind, fn} | null — single active injector, mirrors ws/dc interceptors
   const transformedRtpEndpoints = new WeakSet(); // RTCRtpSender|RTCRtpReceiver already piped through our transform
+  let labeler = null; // (meta) => string|null — single active hook, mirrors ws/dc interceptors
 
   function emit(entry) {
     entry.ts = entry.ts || Date.now();
@@ -82,6 +83,35 @@
     if (!candidateStr) return null;
     const m = candidateStr.match(/typ (\w+)/);
     return m ? m[1] : null; // host | srflx | prflx | relay
+  }
+
+  // ---- connection/socket labeler ---------------------------------------------
+  //
+  // setLabeler(fn) lets a consumer map URL/hostname patterns (signaling
+  // server, TURN/STUN server) to a friendly name in getSnapshot() output,
+  // without this tool knowing any vendor specifics itself.
+
+  function flattenIceServerUrls(configuration) {
+    if (!configuration || !Array.isArray(configuration.iceServers)) return [];
+    const urls = [];
+    configuration.iceServers.forEach((server) => {
+      if (!server || !server.urls) return;
+      if (Array.isArray(server.urls)) urls.push(...server.urls);
+      else urls.push(server.urls);
+    });
+    return urls;
+  }
+
+  function setLabeler(fn) { labeler = fn; }
+  function clearLabeler() { labeler = null; }
+
+  function computeLabel(meta) {
+    if (!labeler) return null;
+    try {
+      return labeler(meta) || null;
+    } catch (_) {
+      return null;
+    }
   }
 
   // ---- message decoders -----------------------------------------------------
@@ -1251,6 +1281,7 @@
         closed: r.closed,
         state: r.state,
         flags: computeAnomalyFlags(r, now),
+        label: computeLabel({ kind: 'connection', connectionId: r.id, urls: flattenIceServerUrls(r.configuration) }),
         localTracks: r.localTracks,
         remoteTracks: r.remoteTracks,
         dataChannels: r.dataChannels.map((d) => ({
@@ -1272,6 +1303,7 @@
         url: r.url,
         protocol: r.protocol,
         state: r.state,
+        label: computeLabel({ kind: 'websocket', socketId: r.id, url: r.url }),
         sentCount: r.sentCount,
         receivedCount: r.receivedCount,
         ...(concise ? {} : { lastMessages: r.messages.slice(-10) }),
@@ -1293,6 +1325,7 @@
       webSocketInterceptorActive: !!webSocketInterceptor,
       mediaFaultInjectorActive: !!mediaFaultInjector,
       suggestDecoderActive: !!suggestDecoder,
+      labelerActive: !!labeler,
       ...(concise ? {} : { recentLog: log.slice(-100) }),
     };
   }
@@ -1399,6 +1432,7 @@
       ['selectedCandidateType', before.selectedCandidateType, after.selectedCandidateType],
       ['qualityScore', before.qualityScore, after.qualityScore],
       ['avSyncDeltaMs', before.avSyncDeltaMs, after.avSyncDeltaMs],
+      ['label', before.label, after.label],
     ].forEach(([key, from, to]) => {
       const c = fieldChange(from, to);
       if (c) changes[key] = c;
@@ -1412,6 +1446,7 @@
       ['state', before.state, after.state],
       ['sentCount', before.sentCount, after.sentCount],
       ['receivedCount', before.receivedCount, after.receivedCount],
+      ['label', before.label, after.label],
     ].forEach(([key, from, to]) => {
       const c = fieldChange(from, to);
       if (c) changes[key] = c;
@@ -1466,6 +1501,8 @@
     registerDecoder,
     setSuggestDecoder,
     clearSuggestDecoder,
+    setLabeler,
+    clearLabeler,
     setWebSocketInterceptor,
     clearWebSocketInterceptor,
     setMediaFaultInjector,
