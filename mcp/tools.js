@@ -64,6 +64,15 @@ function registerTools(server, cdpEndpoint) {
   registerSimpleTool(
     server,
     cdpEndpoint,
+    'wrtc_export_webrtc_internals_dump',
+    'Export diagnostics in the same JSON shape chrome://webrtc-internals\' "Create Dump" produces ({UserAgent, getUserMedia, PeerConnections}), for use with existing webrtc-internals-compatible analysis tools.',
+    undefined,
+    'exportWebrtcInternalsDump'
+  );
+
+  registerSimpleTool(
+    server,
+    cdpEndpoint,
     'wrtc_capture_events',
     'Snapshot the event stream as {capturedAt, events} for a later wrtc_diff_captures call.',
     undefined,
