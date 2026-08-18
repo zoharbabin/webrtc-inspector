@@ -1176,6 +1176,24 @@
     };
   }
 
+  // getSnapshot() caps recentLog at the last 100 entries and latestStats at
+  // the most recent sample, to keep routine calls small. exportBundle() is
+  // for the one-shot "attach to a bug report" case, so it trades that size
+  // cap for completeness: the full log and each connection's full stats
+  // history, alongside a detailed snapshot.
+  function exportBundle() {
+    return {
+      exportedAt: Date.now(),
+      version: '1.4.0',
+      snapshot: getSnapshot({ detail: 'detailed' }),
+      fullLog: log.slice(),
+      statsHistory: Array.from(connectionsById.values()).map((r) => ({
+        connectionId: r.id,
+        stats: r.statsHistory.slice(),
+      })),
+    };
+  }
+
   function fieldChange(before, after) {
     return before === after ? null : { from: before, to: after };
   }
@@ -1253,6 +1271,7 @@
     version: '1.4.0',
     getSnapshot,
     getSnapshotDiff,
+    exportBundle,
     getSdp,
     setFakeMic,
     clearFakeMic,
