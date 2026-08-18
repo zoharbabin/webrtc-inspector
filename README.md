@@ -39,6 +39,7 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` c
 | `getSdp(connId)` | `{local, remote}` full SDP for a connection. |
 | `getRemoteTrackStream(connId, trackId)` | Live `MediaStream` for one remote track — pipe into `<audio>`/`<video>`/`AnalyserNode`. |
 | `replaceOutgoingTrack(connId, kind, track)` | Swap a sender's outgoing track. |
+| `capEncoding(connId, kind, {maxBitrate, maxFramerate, scaleResolutionDownBy, degradationPreference})` | Force an active sender's encoding params via the standard `getParameters()`/mutate/`setParameters()` pattern — simulates a bandwidth-constrained encoder decision deterministically, without waiting for real congestion control to converge. Omit a field to leave it as-is. Real congestion control keeps running underneath, capped by whatever's set here. |
 | `setFakeMic(base64\|ArrayBuffer)` / `clearFakeMic()` | Route future `getUserMedia({audio:true})` to a synthetic source / restore real mic. |
 | `injectAudio(base64\|ArrayBuffer)` | `setFakeMic` + play immediately (one-shot). |
 | `playIntoFakeMic()` | Replay the armed fake-mic buffer. |
