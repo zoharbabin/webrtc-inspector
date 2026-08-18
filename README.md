@@ -2,173 +2,168 @@
 
 [![CI](https://github.com/zoharbabin/webrtc-inspector/actions/workflows/ci.yml/badge.svg)](https://github.com/zoharbabin/webrtc-inspector/actions/workflows/ci.yml)
 
-Framework-agnostic WebRTC inspection and fault injection. Patches standard browser globals — works on any page, regardless of SDK or framework.
+Framework-agnostic WebRTC inspection and fault injection. Patches standard browser globals — works on any page, any SDK.
 
 ## What it patches
 
-`RTCPeerConnection` (tracks, transceivers, SDP, ICE, data channels), `RTCDataChannel.send`, `RTCRtpSender.replaceTrack`, `RTCRtpSender`/`Receiver.createEncodedStreams()`, `MediaStreamTrack.stop`, `WebSocket`, `fetch`/`XMLHttpRequest`, `getUserMedia`/`getDisplayMedia`.
+- `RTCPeerConnection` — tracks, transceivers, SDP, ICE, data channels
+- `RTCDataChannel.send`
+- `RTCRtpSender.replaceTrack`
+- `RTCRtpSender`/`Receiver.createEncodedStreams()`
+- `MediaStreamTrack.stop` (patched directly — the spec doesn't fire `'ended'` for a self-initiated `stop()`)
+- `WebSocket`
+- `fetch` / `XMLHttpRequest` — covers HTTP-based signaling (WHIP/WHEP, SDP-over-HTTP); previews land in `getSnapshot().httpRequests`, faultable via `simulateNetworkLoss({targets: ['http']})`
+- `getUserMedia` / `getDisplayMedia`
 
-`fetch`/`XMLHttpRequest` capture covers HTTP-based signaling (WHIP/WHEP and similar SDP-over-HTTP) that isn't visible to the `RTCPeerConnection`/`WebSocket` patches — request/response previews land in `getSnapshot().httpRequests`, and `simulateNetworkLoss({targets: ['http']})` can fail them on demand.
+Must run before the page's own scripts grab references to these globals.
 
-Must run before the page's own scripts grab references to these globals — see Usage.
+## Install
 
-`MediaStreamTrack.stop` is patched directly because the spec doesn't fire `'ended'` for a self-initiated `stop()` — only for externally-caused endings.
+```sh
+npm install webrtc-inspector
+```
+
+`main` resolves to `extension/core/webrtc-inspector.js`. Inside this repo, `core/webrtc-inspector.js` is a symlink to the same file, for repo-relative paths only.
 
 ## Usage
 
-`npm install webrtc-inspector` — the package's `main` resolves to `extension/core/webrtc-inspector.js`, so `require.resolve('webrtc-inspector')` gives an absolute path to the same file regardless of consumer.
-
-| Method | When to use | How |
+| Method | When | How |
 |---|---|---|
-| Chrome extension | Interactive, ad hoc inspection | `chrome://extensions` → Developer mode → Load unpacked → `extension/` (or `node_modules/webrtc-inspector/extension/` if installed via npm). DevTools → "WebRTC Inspector" panel. |
-| Playwright | Scripted/automated tests | `await page.addInitScript({ path: require.resolve('webrtc-inspector') }); await page.goto(url);` — runs before any page script, on every navigation. |
-| DevTools console paste | One-off manual inspection | Paste the contents of `require.resolve('webrtc-inspector')` (or `extension/core/webrtc-inspector.js` in a repo clone) into the console *before* the connection you want to inspect is created. |
-| MCP server | Any MCP client (Claude Code, etc.) driving/inspecting a real browser | `webrtc-inspector-mcp` bin (or `mcp/server.js` in a repo clone) — see [MCP server](#mcp-server-window__webrtcinspector-as-typed-tools) below. |
+| Chrome extension | Interactive inspection | `chrome://extensions` → Developer mode → Load unpacked → `extension/` (or `node_modules/webrtc-inspector/extension/`). DevTools → "WebRTC Inspector" panel. |
+| Playwright | Scripted tests | `await page.addInitScript({ path: require.resolve('webrtc-inspector') })` before `page.goto(url)`. Runs on every navigation. |
+| DevTools console paste | One-off manual inspection | Paste `require.resolve('webrtc-inspector')`'s contents into the console before the connection is created. |
+| MCP server | MCP clients (Claude Code, etc.) | `webrtc-inspector-mcp` bin, or `mcp/server.js` in a clone. See [MCP server](#mcp-server). |
 
-Within this repo, `extension/core/webrtc-inspector.js` is canonical; `core/webrtc-inspector.js` is a symlink to it, used only for repo-relative paths in local dev/tests — Chrome's unpacked-extension loader is sandboxed to the selected folder, so a symlink pointing *outside* `extension/` would silently load as empty there, and npm doesn't publish symlinks at all, which is why the package's `main` points at the real file directly instead.
+MCP-style Playwright tools that only expose post-navigation `browser_evaluate` miss anything created before that call — use the extension instead.
 
-MCP-style Playwright tools that only expose post-navigation `browser_evaluate` can't match `addInitScript`'s timing — anything created before `browser_evaluate` runs goes unpatched. Use the extension instead for that workflow.
+## DevTools panel
 
-The DevTools panel renders a live bitrate/RTT/jitter/loss sparkline per connection, built client-side from each 1s `getSnapshot()` poll (`extension/panel-sparkline.js`) — not part of the `window.__webrtcInspector` API itself, since it's derived purely from data already exposed via `latestStats`.
-
-The panel also has "Copy" buttons next to each connection's SDP, each data-channel/WebSocket message, and each recent event-log entry — copies the underlying JSON straight to the clipboard for pasting into a bug report (`extension/panel-clipboard.js`).
-
-The panel renders a per-connection/-WebSocket timeline of open/close/error lifecycle events (`extension/panel-timeline.js`), purely from the same event-log timestamps already polled via `getSnapshot()` — no new instrumentation.
-
-The panel matches DevTools' own dark/light theme automatically (`extension/panel-theme.js` + a `data-theme` attribute the panel's CSS switches on), reading `chrome.devtools.panels.themeName` on load and subscribing to `onThemeChanged` for live switching — instead of hardcoding one look.
-
-A "Preserve log across reloads" checkbox (`extension/panel-preserve-log.js`) keeps connection/WebSocket/event history across a page navigation instead of losing it, mirroring DevTools' own Network panel — `window.__webrtcInspector`'s state lives in the inspected page, so it's wiped on every reload. On `chrome.devtools.network.onNavigated`, the last polled snapshot is buffered (up to 5 page loads) and merged back into later renders, tagged `page load #N` and dimmed, while the toggle is on.
-
-A filter box (`extension/panel-filter.js`) narrows the event log and connection/WebSocket lists live as you type, mirroring Chrome's own Network panel filter. Free text matches case-insensitively against each item's own fields; `type:`, `conn:`, and `dir:` tokens (e.g. `type:websocket-message conn:3 dir:out`) narrow by event type, connection/socket id, or message direction, and combine with free text and each other as AND.
-
-The panel's layout is dockable/pop-out safe: `box-sizing: border-box` and `overflow-wrap: anywhere` keep dense tabular data (SDP/stats, long URLs) from forcing a horizontal scrollbar at Chrome DevTools' narrowest docked-right width (~300px), and the same flex-based markup scales up cleanly into a wide undocked window — no separate narrow/wide layout rules needed.
-
-The connection list is sorted bad-state-first (`extension/panel-severity.js`) — failed, then disconnected, then closed, then connecting/new, then healthy — so on a multi-connection page (common with SFU renegotiation) the one connection worth looking at isn't buried under several healthy ones. Ties keep their original order; a connection whose `connectionState`/`iceConnectionState` disagree is ranked by whichever is worse.
-
-The "⏺ Record screenshots" button (`extension/panel-screenshot.js`) arms automatic screenshot capture for the session — off by default, like DevTools' own Performance panel record button, since timing a manual per-event click to a fast ICE/track transition isn't practical. While armed, a connection-created, track-added, or reconnect (a connection/ICE state recovering to connected/completed after having been disconnected/failed) event triggers `chrome.tabs.captureVisibleTab` on the inspected tab; the resulting thumbnail is keyed by the triggering log entry's `seq` and shown inline in the event log (click to open full size). This requires the `tabs` permission and `host_permissions: ["<all_urls>"]` in `manifest.json`.
-
-Right-click any `<video>`/`<audio>` element on the page → "Test this stream" overlays its live kind/status/quality metrics directly on the element (`extension/overlay.js`). The context-menu entry lives in a background service worker (`extension/background.js`, needs the `contextMenus` permission); `overlay.js` is a second, default-world content script (unlike `core/webrtc-inspector.js`'s `MAIN`-world script) since it needs `chrome.runtime` to receive the click — the two content scripts bridge via a `CustomEvent` on the shared `document` rather than a direct reference, since `MAIN`-world globals aren't visible from the default world.
-
-Per-site behavior (a `setLabeler`/`registerDecoder` pair tailored to one target site) is bundled in `extension/adapters.js` as an "adapter" — `{match(hostname, href), labeler?, decoders?}` — auto-selected by hostname on page load, so customizing behavior for a site no longer needs a fork of `core/webrtc-inspector.js`. Add an entry to that file's `ADAPTERS` array (a working `meet.jit.si` example ships as a template), or set `window.__webrtcInspectorAdapters` from an earlier-running script to override the built-in list entirely.
+- **Sparklines** — live bitrate/RTT/jitter/loss per connection, from each 1s `getSnapshot()` poll.
+- **Copy buttons** — next to SDP, each data-channel/WebSocket message, and each log entry. Copies JSON to clipboard.
+- **Timeline** — per-connection/-WebSocket open/close/error lifecycle, from the same log timestamps.
+- **Theme sync** — matches DevTools' dark/light theme automatically.
+- **Preserve log** — checkbox; keeps connection/WebSocket/event history across page navigations (buffers up to 5 page loads, tagged `page load #N`, dimmed).
+- **Filter box** — narrows the log/connection/WebSocket lists live. Free text matches case-insensitively; `type:`, `conn:`, `dir:` tokens (e.g. `type:websocket-message conn:3 dir:out`) AND together.
+- **Bad-state-first sort** — connections ranked failed → disconnected → closed → connecting/new → healthy. Ties keep insertion order; a connection ranks by whichever of `connectionState`/`iceConnectionState` is worse.
+- **Screenshot capture** — "⏺ Record screenshots" button, off by default. While armed, captures the tab on connection-created, track-added, or reconnect (ICE/connection state recovering to connected/completed after disconnected/failed). Thumbnail is keyed by the triggering log entry's `seq`, shown inline, click to open full size. Requires `tabs` permission + `host_permissions: ["<all_urls>"]`.
+- **"Test this stream" overlay** — right-click any `<video>`/`<audio>` element → overlays live kind/status/quality on the element.
+- **Per-site adapters** — `extension/adapters.js`: `{match(hostname, href), labeler?, decoders?}`, auto-selected by hostname. Add an entry to `ADAPTERS`, or set `window.__webrtcInspectorAdapters` to override the built-in list.
 
 ## API — `window.__webrtcInspector`
 
 | Method | Does |
 |---|---|
-| `getSnapshot(opts?)` | Full state: connections, tracks, SDP/ICE summaries, data channels, WebSockets, HTTP requests, stats, flags, last 100 log entries. JSON-serializable. `opts.detail: 'concise'` drops the raw stats report, log, and message/request-body dumps — keeps derived metrics (`qualityScore`, `avSyncDeltaMs`, candidate types, etc.) for routine health checks at a fraction of the tokens. Defaults to `'detailed'` (today's full output). |
-| `getSnapshotDiff(before, after)` | Pure function over two `getSnapshot()` outputs — structured delta: connections/WebSockets added/removed, and for ones present in both, only the fields that changed (ICE/connection/signaling state, track/data-channel counts, `qualityScore`, `avSyncDeltaMs`, candidate type, socket counts). No new instrumentation; works with either detail mode. |
-| `exportBundle()` | One portable, JSON-serializable object for attaching to a bug report: a detailed `getSnapshot()`, the *full* event log (not just the last 100 entries `getSnapshot()` keeps), and each connection's full `statsHistory` (not just the latest sample). `{exportedAt, version, snapshot, fullLog, statsHistory}`. |
-| `exportWebrtcInternalsDump()` | Same diagnostics as `exportBundle()`, reshaped to the JSON format `chrome://webrtc-internals`' "Create Dump" produces — `{UserAgent, getUserMedia, PeerConnections: {<id>: {url, rtcConfiguration, updateLog, stats}}}` — for drop-in use with existing webrtc-internals-compatible tools (e.g. [rtcstats/rtcstats](https://github.com/rtcstats/rtcstats)'s dump-importer). SDP-set updateLog entries reflect the connection's *current* local/remote description, not a full renegotiation history. |
-| `captureEvents()` / `diffCaptures(before, after)` | Regression fixtures: `captureEvents()` snapshots the event stream as `{capturedAt, events}`; save two captures (e.g. from different SDK versions) and pass them to the pure `diffCaptures(before, after)` to see whether a connection's event *shape* changed — per-type event-count deltas (`eventTypeCounts`), total lengths (`sequenceLengths`), and the first index where the two event-type sequences diverge (`firstDivergenceIndex`, `null` if one is a clean prefix of the other or they're identical). |
+| `getSnapshot(opts?)` | Full state: connections, tracks, SDP/ICE summaries, data channels, WebSockets, HTTP requests, stats, flags, last 100 log entries. JSON-serializable. `opts.detail: 'concise'` drops raw stats/log/message dumps, keeps derived metrics. Default: `'detailed'`. |
+| `getSnapshotDiff(before, after)` | Delta between two `getSnapshot()` outputs: connections/WebSockets added/removed, and changed fields for the rest. |
+| `exportBundle()` | `{exportedAt, version, snapshot, fullLog, statsHistory}` — full event log and full per-connection stats history, for bug reports. |
+| `exportWebrtcInternalsDump()` | Same data as `exportBundle()`, reshaped to `chrome://webrtc-internals`' "Create Dump" format: `{UserAgent, getUserMedia, PeerConnections: {<id>: {url, rtcConfiguration, updateLog, stats}}}`. |
+| `captureEvents()` / `diffCaptures(before, after)` | `captureEvents()` → `{capturedAt, events}`. `diffCaptures` compares two captures: `eventTypeCounts`, `sequenceLengths`, `firstDivergenceIndex` (`null` if identical or one is a prefix of the other). |
 | `onEvent(fn)` | Subscribe to the live event log. |
-| `getEvents({since?, limit?, maxChars?})` | Token-budgeted, paginated event log — for polling a long-running session without either missing entries (a fixed "last N" can skip a burst) or blowing your own context budget in one call. `since` is a `seq` cursor (each entry's monotonic `seq`, not a timestamp — pass `0` or omit for the start); `limit` caps entry count; `maxChars` (default `25000`, mirroring Claude Code's own tool-response default) caps total JSON size, as a characters-in-JSON proxy for a token budget (no tokenizer is bundled). Returns `{events, nextSince, remainingCount, truncated, truncationMarker}` — `truncationMarker` is a human-readable string (e.g. `"12 more entries — call getEvents({ since: 42 }) for more"`) whenever `truncated` is `true`, never a silent drop; at least one entry is always returned when one is available, even under a `maxChars` too small to fit it, so pagination can't stall. |
+| `getEvents({since?, limit?, maxChars?})` | Paginated log. `since` is a `seq` cursor (0 or omit = start). `maxChars` (default 25000) caps JSON size. Returns `{events, nextSince, remainingCount, truncated, truncationMarker}`. At least one entry is always returned when available. |
 | `clearLog()` | Drop accumulated log/stats history. |
-| `getSdp(connId)` | `{local, remote}` full SDP for a connection. |
-| `getTrackDiagnostics(trackIds)` | Matches a set of `MediaStreamTrack` ids (e.g. a `<video>`/`<audio>` element's `srcObject.getTracks()`) against tracked local/remote tracks — returns `{connectionId, kind, status, qualityScore, ...}` (remote matches add `freezeRatio`/`qualityFlag`; local matches add `qualityLimitationReason`) for the first match, `null` if none match. Powers the extension's "Test this stream" overlay. |
-| `getRemoteTrackStream(connId, trackId)` | Live `MediaStream` for one remote track — pipe into `<audio>`/`<video>`/`AnalyserNode`. |
+| `getSdp(connId)` | `{local, remote}` full SDP. |
+| `getTrackDiagnostics(trackIds)` | Matches track ids (e.g. an element's `srcObject.getTracks()`) to a tracked local/remote track. Returns `{connectionId, kind, status, qualityScore, ...}`, `null` if no match. |
+| `getRemoteTrackStream(connId, trackId)` | Live `MediaStream` for one remote track. |
 | `replaceOutgoingTrack(connId, kind, track)` | Swap a sender's outgoing track. |
-| `capEncoding(connId, kind, {maxBitrate, maxFramerate, scaleResolutionDownBy, degradationPreference})` | Force an active sender's encoding params via the standard `getParameters()`/mutate/`setParameters()` pattern — simulates a bandwidth-constrained encoder decision deterministically, without waiting for real congestion control to converge. Omit a field to leave it as-is. Real congestion control keeps running underneath, capped by whatever's set here. |
+| `capEncoding(connId, kind, {maxBitrate, maxFramerate, scaleResolutionDownBy, degradationPreference})` | Force encoding params via `getParameters()`/`setParameters()`. Omit a field to leave it. |
 | `setFakeMic(base64\|ArrayBuffer)` / `clearFakeMic()` | Route future `getUserMedia({audio:true})` to a synthetic source / restore real mic. |
-| `injectAudio(base64\|ArrayBuffer)` | `setFakeMic` + play immediately (one-shot). |
+| `injectAudio(base64\|ArrayBuffer)` | `setFakeMic` + play immediately. |
 | `playIntoFakeMic()` | Replay the armed fake-mic buffer. |
-| `getFakeMicTrack()` | Fresh cloned track from the fake-mic source, for manual `replaceTrack()`. |
-| `setFakeCam({width,height,color,text,fps})` / `clearFakeCam()` | Synthetic canvas video source for `getUserMedia({video:true})` / restore real camera. |
-| `injectDataChannelMessage(connId, label, data)` | Send *from* that connection's channel, as if that peer sent it. |
-| `setDataChannelInterceptor(fn)` / `clearDataChannelInterceptor()` | `fn(dir, {connId, label, data})` on every send/deliver. Return new data to rewrite, `false` to block, nothing to pass through. Opt-in — inert until called. |
-| `registerDecoder(matcher, decodeFn)` | Consumer-supplied protocol decoding for data-channel/WebSocket messages, in place of raw string/byte-count previews. `matcher(meta) -> boolean` where `meta = {kind: 'datachannel'\|'websocket', connectionId?, socketId?, label?, url?, dir: 'in'\|'out'}`; first registered match wins. `decodeFn(normalizedData, meta) -> any` (`normalizedData` is `string \| ArrayBuffer`, `Blob` pre-normalized) — may return a value or a Promise. Runs after any interceptor, so a decoder sees the data as actually delivered/sent. Returns an unsubscribe closure, same convention as `onEvent`. |
-| `setSuggestDecoder(fn)` / `clearSuggestDecoder()` | Opt-in advisory layer on `registerDecoder`'s no-match path: `fn(normalizedData, meta)` (same signature as `decodeFn`) runs only when no registered decoder matched, e.g. wired to an LLM call proposing a best-guess label for an unrecognized payload. This library makes no LLM calls itself. Result lands under `suggested` (never `decoded`) with `advisory: true`, so a consumer can't mistake a guess for a real decode. Single active hook, same convention as the interceptors below. |
-| `setLabeler(fn)` / `clearLabeler()` | Consumer-supplied friendly naming for connections/WebSockets in `getSnapshot()` output, without this tool knowing any vendor specifics. `fn(meta) -> string\|null` where `meta` is `{kind: 'connection', connectionId, urls}` (`urls` from that connection's `RTCConfiguration.iceServers`) or `{kind: 'websocket', socketId, url}`. Result lands under each connection's/socket's `label` field (`null` when unmatched or unset). A throwing `fn` yields `label: null`, never breaks the snapshot. Single active hook, same convention as the interceptors above. |
-| `setIceCandidateFilter(connId, fn)` / `clearIceCandidateFilter(connId)` | Drops ICE candidates by type before they reach `addIceCandidate` (incoming) or the app's own `onicecandidate` handler (outgoing) — e.g. `fn = (type) => type !== 'relay'` forces a TURN-only path; `fn = (type) => type !== 'host'` forces indirect-only. `fn(candidateType, candidateStr) -> boolean`, `false` drops. Scoped per `connId` (unlike the single-active-hook interceptors above) since forcing different paths on different connections in the same test is a real use case. A throwing `fn` lets the candidate through rather than dropping it. |
-| `setWebSocketInterceptor(fn)` / `clearWebSocketInterceptor()` | Same pattern as above, for every tracked `WebSocket`: `fn(dir, {socketId, url, data})`. |
-| `injectWebSocketMessage(socketId, data)` | Synthetic incoming `message` event — no real network involved. |
-| `sendOnWebSocket(socketId, data)` | Real `send()` on a tracked socket, as if the app called it. |
-| `killConnection(connId)` | Real `pc.close()` — genuine abrupt transport death. Tests cold-reconnect, not blip recovery. |
-| `restartIce(connId)` | Real `pc.restartIce()` — renegotiate-in-place without tearing down the connection. Tests a materially different recovery path than `killConnection`: vendors that only handle one of the two correctly are a real failure mode. |
-| `simulateNetworkLoss(durationMs, {targets})` | Real dropped sends on `websocket`/`datachannel` (default both) for `durationMs`, then auto-restore. Add `'http'` to `targets` to also fail every `fetch`/`XMLHttpRequest` for the duration (real rejection/error, request never sent) — covers HTTP-polled signaling (WHIP/WHEP). Add `'media'` to drop every real encoded audio/video frame for the duration, via `setMediaFaultInjector` underneath (Chromium-only, same as that primitive) — restores whatever media fault injector, if any, was already active. Composes with any active interceptor. Returns `{stop, done}`. |
-| `simulateNetworkPreset(name)` / `registerNetworkPreset(name, config)` | tc/netem-style named scenarios on top of `simulateNetworkLoss` — `name` instead of picking raw `durationMs`/`targets` by hand. Ships `'home-wifi'`, `'4g-train'`, `'congested-mobile'`; `registerNetworkPreset(name, config)` adds or overrides one, where `config = {durationMs, targets, pattern: 'full'\|'flapping', flapIntervalMs?}` — `'full'` is one continuous outage, `'flapping'` alternates outage/recovery in `flapIntervalMs` steps for the total `durationMs` (models intermittent connectivity, e.g. `'congested-mobile'`). Returns `{stop, done}`, same shape as `simulateNetworkLoss`. |
-| `setMediaFaultInjector(connId, kind, fn)` / `clearMediaFaultInjector()` | Fault injection on real, already-encoded RTP media frames via Insertable Streams. `connId`/`kind` (`'audio'`\|`'video'`) scope which sender/receiver `fn` runs for — `null` for either matches all. `fn(direction, frame, meta)` runs per frame, `direction: 'outgoing'` (sender, pre-network) \| `'incoming'` (receiver, post-network), `frame` is the live `RTCEncodedVideoFrame`/`RTCEncodedAudioFrame`, `meta = {connId, kind, trackId}`. To corrupt: mutate `frame.data` in place (a writable `ArrayBuffer`) and return nothing — the mutated frame flows through. To drop: return `false`. To duplicate: return `'duplicate'`. To delay (and, by giving neighboring frames different delays, reorder): return `{delayMs}`. Only one injector active at a time, same convention as the data-channel/WebSocket interceptors. Chromium-only (`RTCRtpSender`/`Receiver.createEncodedStreams()` isn't a cross-browser standard yet) — no-ops elsewhere. |
+| `getFakeMicTrack()` | Fresh cloned track from the fake-mic source. |
+| `setFakeCam({width,height,color,text,fps})` / `clearFakeCam()` | Synthetic canvas video source / restore real camera. |
+| `injectDataChannelMessage(connId, label, data)` | Deliver a message as if the remote peer sent it. |
+| `setDataChannelInterceptor(fn)` / `clearDataChannelInterceptor()` | `fn(dir, {connId, label, data})` on every send/deliver. Return new data to rewrite, `false` to block, nothing to pass through. |
+| `registerDecoder(matcher, decodeFn)` | `matcher(meta) -> boolean`, `meta = {kind, connectionId?, socketId?, label?, url?, dir}`. First match wins. `decodeFn(normalizedData, meta) -> any\|Promise`. Runs after any interceptor. |
+| `setSuggestDecoder(fn)` / `clearSuggestDecoder()` | Runs only when no `registerDecoder` matched. Result lands under `suggested` (never `decoded`) with `advisory: true`. This library makes no LLM calls itself. |
+| `setLabeler(fn)` / `clearLabeler()` | `fn(meta) -> string\|null`, `meta = {kind:'connection', connectionId, urls}` or `{kind:'websocket', socketId, url}`. Result lands in `label` (`null` if unmatched, or if `fn` throws). |
+| `setIceCandidateFilter(connId, fn)` / `clearIceCandidateFilter(connId)` | `fn(candidateType, candidateStr) -> boolean`, `false` drops. Scoped per connection. A throwing `fn` lets the candidate through. |
+| `setWebSocketInterceptor(fn)` / `clearWebSocketInterceptor()` | `fn(dir, {socketId, url, data})`, same return contract as the data-channel interceptor. |
+| `injectWebSocketMessage(socketId, data)` | Synthetic incoming message, no real network. |
+| `sendOnWebSocket(socketId, data)` | Real `send()` on a tracked socket. |
+| `killConnection(connId)` | Real `pc.close()` — abrupt transport death. |
+| `restartIce(connId)` | Real `pc.restartIce()` — renegotiate in place, no teardown. |
+| `simulateNetworkLoss(durationMs, {targets})` | Drops sends on `websocket`/`datachannel` (default both) for `durationMs`, then restores. `'http'` also fails every `fetch`/XHR. `'media'` drops real encoded frames (Chromium only). Returns `{stop, done}`. |
+| `simulateNetworkPreset(name)` / `registerNetworkPreset(name, config)` | Named scenarios on `simulateNetworkLoss`. Ships `'home-wifi'`, `'4g-train'`, `'congested-mobile'`. `config = {durationMs, targets, pattern:'full'\|'flapping', flapIntervalMs?}`. Returns `{stop, done}`. |
+| `setMediaFaultInjector(connId, kind, fn)` / `clearMediaFaultInjector()` | Per-frame fault injection via Insertable Streams. `kind: 'audio'\|'video'`, `null` matches all. `fn(direction, frame, meta)`, `direction: 'outgoing'\|'incoming'`. Mutate `frame.data` to corrupt; return `false` to drop, `'duplicate'` to duplicate, `{delayMs}` to delay/reorder. One injector at a time. Chromium only. |
 
-Every track from patched `getUserMedia`/`getDisplayMedia` is tagged (`fake-mic`/`real-device`/`display-capture`/`fake-cam`) and the tag follows it into connection logging — `getSnapshot()` shows exactly which connection consumed which source.
+Every track from patched `getUserMedia`/`getDisplayMedia` is tagged (`fake-mic`/`real-device`/`display-capture`/`fake-cam`), visible in `getSnapshot()`.
 
-### MCP server: `window.__webrtcInspector` as typed tools
+### MCP server
 
-`mcp/server.js` exposes the JSON-serializable parts of the API above as typed MCP tools (`wrtc_get_snapshot`, `wrtc_kill_connection`, `wrtc_restart_ice`, `wrtc_simulate_network_loss`, etc.) instead of requiring an MCP client to string-inject via `page.evaluate`/`chrome.devtools.inspectedWindow.eval`. Same motivation as [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp): raw `eval` strings are "programming with a blindfold on."
+`mcp/server.js` exposes the JSON-serializable API above as typed MCP tools (`wrtc_get_snapshot`, `wrtc_kill_connection`, `wrtc_restart_ice`, `wrtc_simulate_network_loss`, etc.).
 
-It attaches to an **already-running** Chromium over CDP — it doesn't launch its own browser. Start Chrome with remote debugging enabled and navigate to a page that's already loaded `core/webrtc-inspector.js`, then point the server at it:
+Attaches to an **already-running** Chromium over CDP — does not launch its own browser.
 
 ```sh
-google-chrome --remote-debugging-port=9222   # or Chromium/Playwright-launched, same flag
-WRTC_CDP_ENDPOINT=http://localhost:9222 node mcp/server.js   # defaults to that URL if unset
+google-chrome --remote-debugging-port=9222   # or Chromium/Playwright-launched
+WRTC_CDP_ENDPOINT=http://localhost:9222 node mcp/server.js   # defaults to that URL
 ```
 
-Wire it into an MCP client's config (e.g. Claude Code) by pointing at `mcp/server.js` as the command, with `WRTC_CDP_ENDPOINT` set if not using the default port.
+Point an MCP client (e.g. Claude Code) at `mcp/server.js` as the command, with `WRTC_CDP_ENDPOINT` set if not using the default port.
 
-Tools cover the pure-JSON-in/JSON-out surface: snapshots/diffs/bundles/captures, `getSdp`, `killConnection`, `restartIce`, `simulateNetworkLoss`, `capEncoding`, fake mic/cam, and data-channel/WebSocket message injection. `simulateNetworkLoss` awaits the full outage in-page and returns once it's done — there's no early-`stop()` handle across the MCP boundary. Methods that take or return a live JS reference (`setMediaFaultInjector`, `setDataChannelInterceptor`, `setWebSocketInterceptor`, `registerDecoder`, `setSuggestDecoder`, `setLabeler`, `setIceCandidateFilter`, `onEvent`, `replaceOutgoingTrack`, `getFakeMicTrack`) can't cross that boundary and aren't exposed here — use `core/webrtc-inspector.js` directly in-page for those.
+Covers the pure-JSON surface: snapshots/diffs/bundles/captures, `getSdp`, `killConnection`, `restartIce`, `simulateNetworkLoss`, `capEncoding`, fake mic/cam, data-channel/WebSocket message injection. `simulateNetworkLoss` blocks until the outage finishes — no early `stop()` across the MCP boundary.
 
-### `qualityScore` (MOS-style, 1-5)
+Not exposed (can't cross the MCP boundary — live JS references): `setMediaFaultInjector`, `setDataChannelInterceptor`, `setWebSocketInterceptor`, `registerDecoder`, `setSuggestDecoder`, `setLabeler`, `setIceCandidateFilter`, `onEvent`, `replaceOutgoingTrack`, `getFakeMicTrack`. Use `core/webrtc-inspector.js` in-page for those.
 
-`getSnapshot().connections[].qualityScore` is a single 1-5 number meant to answer "is this connection fine or bad" without RTP domain knowledge. It averages up to two sub-scores, each computed from stats already being polled — `null` when neither is available:
+### `qualityScore` (1-5)
 
-- **Audio** — a simplified ITU-T G.107 E-model: effective latency (`RTT + jitter*2 + 10`) and packet loss feed an R-factor, converted to MOS via the standard cubic. Same constants as [rtpengine's implementation](https://telecom.altanai.com/2018/04/17/voip-call-metric-monitoring/) and [this write-up](https://stackoverflow.com/questions/54124329/is-there-a-formula-for-rating-webrtc-audio-quality-as-excellent-good-fair-or). Ignores codec-specific impairment and echo.
-- **Video** — no standardized equivalent exists, so this uses bits-delivered-per-pixel-per-frame (a common encoder-tuning heuristic: ~0.1 bpp is solidly good H.264/VP8, below ~0.01 bpp is visibly blocky) linearly mapped onto 1-5. Ignores content complexity and codec efficiency.
+`getSnapshot().connections[].qualityScore` — single number, `null` when no data. Averages up to two sub-scores:
 
-Both are approximations for a live diagnostic signal, not certified MOS/VMAF measurements — use `qualityScore` to spot "this call is degrading," not to certify codec performance.
+- **Audio** — simplified ITU-T G.107 E-model on RTT/jitter/loss. Ignores codec impairment and echo.
+- **Video** — bits-delivered-per-pixel-per-frame, linearly mapped to 1-5. Ignores content complexity and codec efficiency.
 
-### `flags` (heuristic anomaly detection)
+Approximate diagnostic signal, not a certified MOS/VMAF measurement.
 
-`getSnapshot().connections[].flags` is a list of short machine-readable strings naming suspicious states worth a human's attention, computed live at snapshot time from signals `getSnapshot()` already tracks — no extra polling. Empty when nothing looks wrong.
+### `flags`
+
+`getSnapshot().connections[].flags` — short machine-readable strings, computed live. Empty when nothing looks wrong.
 
 | Flag | Meaning |
 |---|---|
-| `ice_stuck_checking_<ms>ms` | ICE has been in `checking` for over 5s without settling — a hung NAT traversal / connectivity-check failure. |
-| `datachannel_opened_never_used:<label>` | A data channel has been `open` for over 3s without a single message either way. |
-| `track_added_no_stats:<trackId>` | A track was added over 3s ago but has never correlated to any outbound-rtp (local) or inbound-rtp (remote) stats report — usually a stuck negotiation. |
-| `freeze_ratio_bad:<trackId>` | A remote track's `freezeRatio` (fraction of time spent frozen) is above 10% — same threshold as its `qualityFlag: 'bad'`. |
-| `quality_limited_<reason>:<trackId>` | A local track's `qualityLimitationReason` is a non-`'none'` value (`cpu`, `bandwidth`, `other`). |
-| `candidate_type_flipped_<n>x` | The connection's selected candidate type has flipped (srflx↔relay) 2 or more times. |
+| `ice_stuck_checking_<ms>ms` | ICE in `checking` for over 5s. |
+| `datachannel_opened_never_used:<label>` | Channel `open` for over 3s, zero messages. |
+| `track_added_no_stats:<trackId>` | Track added over 3s ago, no correlated stats report. |
+| `freeze_ratio_bad:<trackId>` | Remote track `freezeRatio` above 10%. |
+| `quality_limited_<reason>:<trackId>` | Local track `qualityLimitationReason` is non-`'none'`. |
+| `candidate_type_flipped_<n>x` | Selected candidate type flipped (srflx↔relay) 2+ times. |
 
-### Reconnect / fault-injection testing
+### Reconnect / fault-injection primitives
 
-`browserContext.setOffline()` and DevTools' `Network.emulateNetworkConditions` don't touch already-flowing WebRTC UDP media — both act on the network-service layer, which WebRTC bypasses. `pfctl`/`tc` (OS-level) is the traditional fallback; `setMediaFaultInjector` (Chromium only) is the page-JS-only alternative for already-flowing media.
-
-`killConnection`, `restartIce`, `simulateNetworkLoss`, and `setMediaFaultInjector` are the real alternatives — each tests a different failure mode:
+`browserContext.setOffline()` and DevTools' `Network.emulateNetworkConditions` don't touch already-flowing WebRTC UDP media. `pfctl`/`tc` is the OS-level fallback; `setMediaFaultInjector` (Chromium only) is the page-JS alternative.
 
 | Primitive | Tests |
 |---|---|
-| `killConnection` | Does the client detect the peer connection is gone and start a fresh session? (abrupt death, not a blip) |
-| `restartIce` | Does the client's renegotiate-in-place path recover without tearing down the connection? A materially different code path than `killConnection`'s full teardown — vendors that only handle one correctly are a real failure mode. |
-| `simulateNetworkLoss` | Does the client's heartbeat/backoff logic detect a control-plane outage and recover once it clears, without killing media? Pick `durationMs` well past any known heartbeat interval so the outage is unambiguous. |
-| `setMediaFaultInjector` | Does the client tolerate real packet loss/reorder/duplication on live RTP media (concealment, jitter buffer, PLI/NACK requests) without treating it as a connection failure? |
+| `killConnection` | Fresh-session recovery after abrupt death. |
+| `restartIce` | Renegotiate-in-place recovery, no teardown. |
+| `simulateNetworkLoss` | Heartbeat/backoff detection of a control-plane outage. Pick `durationMs` past any known heartbeat interval. |
+| `setMediaFaultInjector` | Concealment/jitter-buffer/PLI/NACK tolerance to real packet loss/reorder/duplication. |
 
-### Scenario compiler (natural-language → fault-injection primitives)
+### Scenario compiler
 
-`extension/scenario-compiler.js` is optional and not loaded by default. It's a small, deterministic keyword/regex DSL — not an LLM call — that compiles a short scenario phrase into a sequence of the primitives above, so an agent (or a thin LLM-backed helper upstream of this) can target a documented mapping instead of hand-picking API calls and durations:
+`extension/scenario-compiler.js` — optional, not loaded by default. Deterministic keyword/regex DSL (no LLM) compiling a scenario phrase into a sequence of the primitives above.
 
 ```js
-const { compileScenario, runCompiledScenario } = require('webrtc-inspector/extension/scenario-compiler.js'); // or a <script> global
+const { compileScenario, runCompiledScenario } = require('webrtc-inspector/extension/scenario-compiler.js');
 
 const compiled = compileScenario('drop packets for 3s then kill the connection', { connectionId: 1 });
 // compiled.steps -> [
 //   { primitive: 'simulateNetworkLoss', args: [3000, { targets: ['media'] }] },
 //   { primitive: 'killConnection', args: [1] },
 // ]
-// compiled.warnings -> [] (populated for clauses it couldn't map, or a
-// kill/restartIce clause with no connectionId in context)
+// compiled.warnings -> [] (unmapped clauses, or kill/restartIce with no connectionId)
 
 await runCompiledScenario(compiled, window.__webrtcInspector, { bundle: true });
-// runs each step in order (awaiting a simulateNetworkLoss/simulateNetworkPreset
-// step's `done` before starting the next), and attaches an exportBundle() (#4)
-// snapshot as `bundle` so the scenario and its outcome travel together.
+// attaches exportBundle() as `bundle`
 ```
 
-A scenario is split into ordered clauses on `"then"`/`";"`. Each clause maps to one primitive, checked in priority order: a named preset (`"home wifi"` / `"4g train"` / `"congested mobile"`) → `simulateNetworkPreset`; `"kill"`/`"terminate"`/an abrupt disconnect → `killConnection`; `"restart ice"` → `restartIce`; otherwise a clause with a duration (`"for 5s"` / `"for 200ms"`) → `simulateNetworkLoss`, with `targets` inferred from keywords (`data channel`, `websocket`/`signaling`, `http`/`whip`/`whep`, `media`/`audio`/`video`/`rtp`/`packet`) and defaulting to `['websocket', 'datachannel']` when none match.
+Clauses split on `"then"`/`";"`. Priority: named preset (`"home wifi"`/`"4g train"`/`"congested mobile"`) → `simulateNetworkPreset`; `"kill"`/`"terminate"` → `killConnection`; `"restart ice"` → `restartIce`; duration (`"for 5s"`) → `simulateNetworkLoss`, `targets` inferred from keywords (`data channel`, `websocket`/`signaling`, `http`/`whip`/`whep`, `media`/`audio`/`video`/`rtp`/`packet`), default `['websocket', 'datachannel']`.
 
-### Signature matching on captured sessions
+### Signature matching
 
-`extension/signature-matcher.js` is optional and not loaded by default. It's a classification layer on top of `captureEvents()`/`exportBundle()`'s captured event log: pattern-matches a session against a set of named signatures so common failure modes get flagged automatically instead of a manual read-through.
+`extension/signature-matcher.js` — optional, not loaded by default. Pattern-matches a captured event log against named signatures.
 
 ```js
-const { matchSignatures } = require('webrtc-inspector/extension/signature-matcher.js'); // or a <script> global
+const { matchSignatures } = require('webrtc-inspector/extension/signature-matcher.js');
 
 const capture = window.__webrtcInspector.captureEvents(); // or exportBundle()
 const findings = matchSignatures(capture);
@@ -176,24 +171,22 @@ const findings = matchSignatures(capture);
 //    missedCount: 3, firstMissedSeq: 12, closeSeq: 15, description: '...' }, ...]
 ```
 
-A signature is `{ name, match(events, opts) -> finding[] }` — a function, not a static pattern list, since patterns like "N missed heartbeats then abrupt close" need windowed/stateful reasoning a plain per-event predicate chain can't express. Two starter signatures ship as `DEFAULT_SIGNATURES`:
+`matchSignatures(capture, signatures?, opts?)` accepts a raw events array, `captureEvents()`-shaped `{events}`, or `exportBundle()`-shaped `{fullLog}`. Pass `signatures` to run custom ones alongside or instead of the defaults.
 
 | Signature | Flags |
 |---|---|
-| `missed-heartbeat-reconnect-gap` | `opts.minConsecutive` (default 3) consecutive unanswered outgoing WebSocket or data-channel messages on one socket/connection, followed by its close within `opts.windowMs` (default 10000) — a generic proxy for a missed-heartbeat-driven disconnect that doesn't require parsing any app-level ping/pong protocol. |
-| `abrupt-close-without-recovery` | A `websocket-close`/`connection-killed`/failed-or-disconnected `connection-state` with no reconnect attempt (a new connection/socket created) or same-connection recovery back to `'connected'` within `opts.windowMs`. |
+| `missed-heartbeat-reconnect-gap` | `opts.minConsecutive` (default 3) consecutive unanswered outgoing WebSocket/data-channel messages, then close within `opts.windowMs` (default 10000). |
+| `abrupt-close-without-recovery` | `websocket-close`/`connection-killed`/failed-or-disconnected `connection-state` with no reconnect or same-connection recovery within `opts.windowMs`. |
 
-`matchSignatures(capture, signatures?, opts?)` accepts a raw events array, a `captureEvents()`-shaped `{events}` object, or an `exportBundle()`-shaped `{fullLog}` object; pass your own `signatures` array to run custom ones alongside or instead of the defaults.
+### Metrics export
 
-### Metrics export (Prometheus / OpenTelemetry)
-
-`extension/metrics-exporter.js` is optional and not loaded by default — `chrome://webrtc-internals`-style in-page history is capped and non-persistent, so for longer-running sessions or CI-style regression tracking, load it alongside `core/webrtc-inspector.js` and `panel-sparkline.js` (it reuses that file's bitrate/RTT/jitter/loss derivation) and call:
+`extension/metrics-exporter.js` — optional, not loaded by default.
 
 ```js
-const { startMetricsExporter } = require('webrtc-inspector/extension/metrics-exporter.js'); // or a <script> global
+const { startMetricsExporter } = require('webrtc-inspector/extension/metrics-exporter.js');
 const handle = startMetricsExporter(window.__webrtcInspector, {
   endpointUrl: 'http://localhost:9090/api/v1/otlp/v1/metrics',
-  format: 'otlp', // or 'prometheus' (default) for a Pushgateway-style text-exposition POST
+  format: 'otlp', // or 'prometheus' (default)
   intervalMs: 15000,
   resourceAttributes: { 'service.name': 'my-app' },
   onError: (err) => console.error('metrics push failed', err),
@@ -201,25 +194,21 @@ const handle = startMetricsExporter(window.__webrtcInspector, {
 // later: handle.stop();
 ```
 
-Pushes per-connection `qualityScore`, `bitrateKbps`, `rttMs`, `jitterMs`, `lossPct` as gauges — `connection_id` is the only label/attribute, keeping cardinality bounded. A failed push is routed to `onError`, not thrown — a transient collector outage doesn't kill tracking for the rest of the session.
+Pushes per-connection `qualityScore`, `bitrateKbps`, `rttMs`, `jitterMs`, `lossPct` as gauges. `connection_id` is the only label. Failed pushes route to `onError`, not thrown.
 
 ## Known limitations
 
-- **`setMediaFaultInjector` is Chromium-only**: it uses `createEncodedStreams()`, a Chrome-specific `RTCRtpSender`/`Receiver` extension. The standards-track replacement, `RTCRtpScriptTransform`, requires a dedicated `Worker` and isn't implemented here yet — no-ops silently on Firefox/Safari and any Chromium build without support.
-- **Decoded message payloads are not redacted**: `registerDecoder`'s output is capped in size like `preview()` but not scrubbed of secrets. A fully decoded payload (parsed protobuf, vendor framing) can surface more PII/tokens/user data in `getSnapshot()`/`recentLog`/exported bundles than a truncated string preview would. Scrubbing decoder output of secrets before persisting or sharing a snapshot is the caller's responsibility.
-- **SFU app-message channels**: some SFU transports (e.g. mediasoup-client) route control-plane messages over a signaling `WebSocket` instead of a literal `RTCDataChannel` — invisible to pure `RTCDataChannel` instrumentation. Covered here since `WebSocket` is patched too.
-- **Unpatched transports**: WebTransport, SSE, or a native non-browser channel carrying control-plane traffic stays invisible. Open category, not exhaustively covered.
-- **Timing-dependent**: instrumentation only sees connections/tracks/channels created *after* the patch runs — see Usage for injection-timing caveats per method.
+- **`setMediaFaultInjector` is Chromium-only** — uses `createEncodedStreams()`. No-ops silently elsewhere.
+- **Decoded payloads aren't redacted** — `registerDecoder` output is size-capped but not scrubbed. Redaction is the caller's responsibility.
+- **SFU app-message channels** — some SFU transports route control-plane messages over `WebSocket` instead of `RTCDataChannel`. Covered here since `WebSocket` is patched.
+- **Unpatched transports** — WebTransport, SSE, or a native channel carrying control-plane traffic is invisible.
+- **Timing-dependent** — only sees connections/tracks/channels created after the patch runs.
 
 ## Roadmap
 
 Tracked as issues: https://github.com/zoharbabin/webrtc-inspector/issues
 
 ## Testing
-
-Playwright suite under `test/specs/`, one file per feature area (peer connections, data channels, WebSockets, fake mic/cam, network-fault primitives). Every spec connects two `RTCPeerConnection`s directly in one page (no signaling server) via the shared helper in `test/fixtures/session-helpers.js`.
-
-`test/specs/mcp-server.spec.js` is the exception: it launches a real Chromium with `--remote-debugging-port`, spawns `mcp/server.js` as a real subprocess over stdio via the MCP SDK's `Client`, and drives a real loopback session through the MCP tools end to end.
 
 ```sh
 npm install
@@ -229,7 +218,11 @@ npm run test:ui                               # interactive UI mode
 npm run lint
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint + the full suite on every push/PR, posts a pass/fail table to the job summary, and uploads the full HTML report (traces, screenshots on failure) as an artifact.
+Playwright suite under `test/specs/`, one file per feature area. Specs connect two `RTCPeerConnection`s directly in one page (no signaling server) via `test/fixtures/session-helpers.js`.
+
+`test/specs/mcp-server.spec.js` launches a real Chromium with `--remote-debugging-port`, spawns `mcp/server.js` as a subprocess over stdio via the MCP SDK's `Client`, and drives a real loopback session through the MCP tools.
+
+CI (`.github/workflows/ci.yml`) runs lint + the full suite on every push/PR, posts a pass/fail table to the job summary, and uploads the HTML report (traces, screenshots on failure) as an artifact.
 
 ## License
 
