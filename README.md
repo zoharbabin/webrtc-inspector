@@ -90,18 +90,23 @@ Every track from patched `getUserMedia`/`getDisplayMedia` is tagged (`fake-mic`/
 
 ### MCP server
 
-`mcp/server.js` exposes the JSON-serializable API above as typed MCP tools (`wrtc_get_snapshot`, `wrtc_kill_connection`, `wrtc_restart_ice`, `wrtc_simulate_network_loss`, etc.).
+`mcp/server.js` exposes the JSON-serializable API above as typed MCP tools (`wrtc_get_snapshot`, `wrtc_kill_connection`, `wrtc_restart_ice`, `wrtc_simulate_network_loss`, `wrtc_navigate`, etc.).
 
-Attaches to an **already-running** Chromium over CDP — does not launch its own browser.
+- **Attaches** to an already-running Chromium over CDP when `WRTC_CDP_ENDPOINT` (default `http://localhost:9222`) is reachable.
+- **Self-launches** its own Chromium otherwise — no human needs to start Chrome first. `core/webrtc-inspector.js` is pre-injected via `addInitScript()` before any page script runs, same as the Playwright path. Headed by default (`WRTC_HEADLESS=true` for CI/headless use).
 
 ```sh
+# Attach mode
 google-chrome --remote-debugging-port=9222   # or Chromium/Playwright-launched
 WRTC_CDP_ENDPOINT=http://localhost:9222 node mcp/server.js   # defaults to that URL
+
+# Self-launch mode: just run it, then call wrtc_navigate({url}) to open a page
+node mcp/server.js
 ```
 
 Point an MCP client (e.g. Claude Code) at `mcp/server.js` as the command, with `WRTC_CDP_ENDPOINT` set if not using the default port.
 
-Covers the pure-JSON surface: snapshots/diffs/bundles/captures, `getSdp`, `killConnection`, `restartIce`, `simulateNetworkLoss`, `capEncoding`, fake mic/cam, data-channel/WebSocket message injection. `simulateNetworkLoss` blocks until the outage finishes — no early `stop()` across the MCP boundary.
+Covers the pure-JSON surface: snapshots/diffs/bundles/captures, `getSdp`, `killConnection`, `restartIce`, `simulateNetworkLoss`, `capEncoding`, fake mic/cam, data-channel/WebSocket message injection, and `wrtc_navigate({url})` to point the current page at a target URL (creates and pre-instruments one if none exists yet). `simulateNetworkLoss` blocks until the outage finishes — no early `stop()` across the MCP boundary.
 
 Not exposed (can't cross the MCP boundary — live JS references): `setMediaFaultInjector`, `setDataChannelInterceptor`, `setWebSocketInterceptor`, `registerDecoder`, `setSuggestDecoder`, `setLabeler`, `setIceCandidateFilter`, `onEvent`, `replaceOutgoingTrack`, `getFakeMicTrack`. Use `core/webrtc-inspector.js` in-page for those.
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // MCP server exposing window.__webrtcInspector as typed tools over stdio.
 // Attaches to an already-running Chromium via CDP (WRTC_CDP_ENDPOINT, default
-// http://localhost:9222) rather than launching its own browser — the target
-// page must already have core/webrtc-inspector.js loaded. See README.md.
+// http://localhost:9222) when reachable. Otherwise (#78) mcp/browser.js
+// launches its own Chromium with core/webrtc-inspector.js pre-injected — see
+// wrtc_navigate and README.md.
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { registerTools } = require('./tools');

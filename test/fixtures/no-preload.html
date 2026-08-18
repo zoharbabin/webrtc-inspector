@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<!-- #78 — deliberately does NOT load core/webrtc-inspector.js itself. Proves
+     the MCP self-launch path's addInitScript pre-instrumentation: if this
+     inline script's RTCPeerConnection isn't already tracked by the time
+     wrtc_get_snapshot is called next, the injection timing is wrong. -->
+<body>
+<script>
+window.__preInjectedPc = new RTCPeerConnection({ iceServers: [] });
+</script>
+</body>
+</html>
