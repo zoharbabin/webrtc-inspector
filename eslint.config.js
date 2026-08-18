@@ -26,6 +26,7 @@ module.exports = [
         AudioContext: 'readonly',
         webkitAudioContext: 'readonly',
         Blob: 'readonly',
+        TransformStream: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         setInterval: 'readonly',

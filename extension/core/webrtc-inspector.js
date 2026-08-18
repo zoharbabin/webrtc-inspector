@@ -47,6 +47,8 @@
   let webSocketInterceptor = null;
   const decoders = []; // {id, matcher, decodeFn}, registration order = match priority
   let nextDecoderId = 1;
+  let mediaFaultInjector = null; // {connId, kind, fn} | null — single active injector, mirrors ws/dc interceptors
+  const transformedRtpEndpoints = new WeakSet(); // RTCRtpSender|RTCRtpReceiver already piped through our transform
 
   function emit(entry) {
     entry.ts = entry.ts || Date.now();
@@ -152,9 +154,13 @@
   // ---- RTCPeerConnection ----------------------------------------------------
 
   function PatchedRTCPeerConnection(configuration, constraints) {
+    // encodedInsertableStreams is a Chrome-specific RTCConfiguration extension
+    // that unlocks RTCRtpSender/Receiver.createEncodedStreams() below — always
+    // set, harmless no-op on engines that don't recognize it.
+    const encodedStreamsConfig = Object.assign({}, configuration, { encodedInsertableStreams: true });
     const pc = constraints !== undefined
-      ? new OriginalRTCPeerConnection(configuration, constraints)
-      : new OriginalRTCPeerConnection(configuration);
+      ? new OriginalRTCPeerConnection(encodedStreamsConfig, constraints)
+      : new OriginalRTCPeerConnection(encodedStreamsConfig);
 
     const id = nextConnectionId++;
     const record = {
@@ -221,6 +227,7 @@
       attachTrackLifecycle(record, trackRecord, ev.track, 'remote');
       if (ev.track.kind === 'audio') meterRemoteAudioTrack(trackRecord, ev.track);
       emit({ type: 'track-received', connectionId: id, kind: ev.track.kind, trackId: ev.track.id, sourceTag: tag ? tag.tag : null });
+      installEncodedTransform(record, ev.receiver, 'incoming', ev.track.kind);
     });
     pc.addEventListener('datachannel', (ev) => {
       instrumentDataChannel(record, ev.channel, 'remote');
@@ -238,6 +245,82 @@
     track.addEventListener('ended', () => { trackRecord.status = 'ended'; emit({ type: 'track-ended', connectionId: record.id, trackId: track.id, origin }); });
     track.addEventListener('mute', () => { trackRecord.status = 'muted'; emit({ type: 'track-muted', connectionId: record.id, trackId: track.id, origin }); });
     track.addEventListener('unmute', () => { trackRecord.status = 'live'; emit({ type: 'track-unmuted', connectionId: record.id, trackId: track.id, origin }); });
+  }
+
+  // ---- Insertable Streams: encoded media-frame fault injection --------------
+  //
+  // Chromium-only: createEncodedStreams() is a Chrome RTCRtpSender/Receiver
+  // extension, not yet the standardized RTCRtpScriptTransform. No-ops on other
+  // engines. setMediaFaultInjector's fn receives the live encoded frame — its
+  // writable .data lets a caller corrupt/rewrite in place with no special
+  // return value; 'duplicate'/{delayMs}/false are for actions the platform
+  // has no direct API for.
+
+  function injectorMatches(injector, connId, kind) {
+    if (injector.connId != null && injector.connId !== connId) return false;
+    if (injector.kind != null && injector.kind !== kind) return false;
+    return true;
+  }
+
+  function cloneEncodedFrame(frame) {
+    try {
+      return new frame.constructor(frame, { data: frame.data.slice(0) });
+    } catch (_) {
+      return frame; // constructor form unsupported on this engine — best effort
+    }
+  }
+
+  function installEncodedTransform(record, endpoint, direction, kind) {
+    if (!endpoint || typeof endpoint.createEncodedStreams !== 'function') return; // unsupported browser
+    if (transformedRtpEndpoints.has(endpoint)) return;
+    transformedRtpEndpoints.add(endpoint);
+
+    let streams;
+    try {
+      streams = endpoint.createEncodedStreams();
+    } catch (_) {
+      return;
+    }
+
+    const transform = new TransformStream({
+      transform(frame, controller) {
+        const injector = mediaFaultInjector;
+        if (!injector || !injectorMatches(injector, record.id, kind)) {
+          controller.enqueue(frame);
+          return;
+        }
+        let action;
+        try {
+          action = injector.fn(direction, frame, { connId: record.id, kind, trackId: endpoint.track ? endpoint.track.id : null });
+        } catch (_) {
+          action = undefined; // a throwing injector just passes the frame through
+        }
+        if (action === false) return; // drop
+        if (action === 'duplicate') {
+          controller.enqueue(frame);
+          controller.enqueue(cloneEncodedFrame(frame));
+          return;
+        }
+        if (action && typeof action.delayMs === 'number') {
+          setTimeout(() => {
+            try { controller.enqueue(frame); } catch (_) { /* stream closed before the delay elapsed */ }
+          }, action.delayMs);
+          return;
+        }
+        controller.enqueue(frame);
+      },
+    });
+
+    streams.readable.pipeThrough(transform).pipeTo(streams.writable).catch(() => {
+      /* rejects on pc close/track end — expected, not an error */
+    });
+  }
+
+  function setMediaFaultInjector(connId, kind, fn) {
+    mediaFaultInjector = { connId: connId != null ? connId : null, kind: kind != null ? kind : null, fn };
+  }
+  function clearMediaFaultInjector() {
+    mediaFaultInjector = null;
   }
 
   // MediaStreamTrack's spec-defined 'ended' EVENT does not fire for an explicit
@@ -267,7 +350,10 @@
   OriginalRTCPeerConnection.prototype.addTrack = function (track, ...streams) {
     const result = originalAddTrack.apply(this, [track, ...streams]);
     const record = recordByPc.get(this);
-    if (record) logLocalTrack(record, track);
+    if (record) {
+      logLocalTrack(record, track);
+      installEncodedTransform(record, result, 'outgoing', track.kind);
+    }
     return result;
   };
 
@@ -277,8 +363,10 @@
       const result = originalAddTransceiver.apply(this, [trackOrKind, init]);
       const record = recordByPc.get(this);
       if (record) {
-        emit({ type: 'transceiver-added', connectionId: record.id, kind: typeof trackOrKind === 'string' ? trackOrKind : trackOrKind.kind, direction: init && init.direction });
+        const kind = typeof trackOrKind === 'string' ? trackOrKind : trackOrKind.kind;
+        emit({ type: 'transceiver-added', connectionId: record.id, kind, direction: init && init.direction });
         if (trackOrKind && typeof trackOrKind !== 'string') logLocalTrack(record, trackOrKind);
+        installEncodedTransform(record, result.sender, 'outgoing', kind);
       }
       return result;
     };
@@ -1079,6 +1167,7 @@
       fakeCamActive: !!fakeCam,
       dataChannelInterceptorActive: !!dataChannelInterceptor,
       webSocketInterceptorActive: !!webSocketInterceptor,
+      mediaFaultInjectorActive: !!mediaFaultInjector,
       ...(concise ? {} : { recentLog: log.slice(-100) }),
     };
   }
@@ -1176,6 +1265,8 @@
     registerDecoder,
     setWebSocketInterceptor,
     clearWebSocketInterceptor,
+    setMediaFaultInjector,
+    clearMediaFaultInjector,
     injectWebSocketMessage,
     sendOnWebSocket,
     killConnection,
