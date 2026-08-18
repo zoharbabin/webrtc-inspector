@@ -192,7 +192,16 @@ function renderSnapshot(snap) {
     el.innerHTML = '';
     return;
   }
-  status.textContent = `${snap.connections.length} connection(s) · ${snap.webSockets.length} websocket(s) · fake mic ${snap.fakeMicActive ? 'armed' : 'not set'} · fake cam ${snap.fakeCamActive ? 'armed' : 'not set'} · dc interceptor ${snap.dataChannelInterceptorActive ? 'ON' : 'off'} · ws interceptor ${snap.webSocketInterceptorActive ? 'ON' : 'off'}`;
+  const chip = (label, active, activeText, inactiveText) =>
+    `<span class="chip ${active ? 'chip-active' : ''}">${label}: ${active ? activeText : inactiveText}</span>`;
+  status.innerHTML = [
+    `<span class="chip chip-active">${snap.connections.length} connection${snap.connections.length === 1 ? '' : 's'}</span>`,
+    `<span class="chip chip-active">${snap.webSockets.length} websocket${snap.webSockets.length === 1 ? '' : 's'}</span>`,
+    chip('fake mic', snap.fakeMicActive, 'armed', 'not set'),
+    chip('fake cam', snap.fakeCamActive, 'armed', 'not set'),
+    chip('dc interceptor', snap.dataChannelInterceptorActive, 'ON', 'off'),
+    chip('ws interceptor', snap.webSocketInterceptorActive, 'ON', 'off'),
+  ].join('');
 
   const filter = parseFilterQuery(filterQuery);
   const filteredConnections = sortConnectionsBySeverity(filterConnections(snap.connections, filter));
@@ -224,7 +233,9 @@ function renderSnapshot(snap) {
         <tr><th>ICE candidates</th><td>local: ${c.localCandidateTypes.join(', ') || '—'} / remote: ${c.remoteCandidateTypes.join(', ') || '—'}</td></tr>
       </table>
     </div>
-  `).join('') || (snap.connections.length ? '<i>no connections match the filter</i>' : '<i>no peer connections observed yet</i>');
+  `).join('') || (snap.connections.length
+    ? '<p class="empty-state">No connections match the filter.</p>'
+    : '<p class="empty-state">No peer connections yet — open a page that creates an RTCPeerConnection to see it appear here.</p>');
 
   const wsEl = document.getElementById('websockets');
   wsEl.innerHTML = filteredWebSockets.map((s) => `
@@ -238,7 +249,9 @@ function renderSnapshot(snap) {
         <tr><th>Last messages</th><td>${(s.lastMessages || []).map((m) => `<div class="msg-row">${messageCopyRow(m)}</div>`).join('') || '—'}</td></tr>
       </table>
     </div>
-  `).join('') || (snap.webSockets.length ? '<i>no websockets match the filter</i>' : '<i>no websockets observed yet</i>');
+  `).join('') || (snap.webSockets.length
+    ? '<p class="empty-state">No websockets match the filter.</p>'
+    : '<p class="empty-state">No WebSockets yet — open a page that opens one to see it appear here.</p>');
 
   const logEl = document.getElementById('eventlog');
   if (logEl) {
@@ -248,7 +261,9 @@ function renderSnapshot(snap) {
       <div class="log-row ${entry._stale ? 'stale' : ''}">${new Date(entry.ts).toLocaleTimeString()} · ${escapeHtml(entry.type)}${entry.connectionId !== undefined ? ` · #${entry.connectionId}` : ''}${entry._stale ? ` <span class="badge">page load #${entry._gen}</span>` : ''}
         <button class="copy-btn" data-copy-idx="${registerCopyTarget(entry)}">Copy</button>
         ${screenshotsBySeq.has(entry.seq) ? `<div><img class="shot-thumb" src="${screenshotsBySeq.get(entry.seq)}" data-shot-seq="${entry.seq}"></div>` : ''}</div>
-    `).join('') || ((snap.recentLog || []).length ? '<i>no events match the filter</i>' : '<i>no events yet</i>');
+    `).join('') || ((snap.recentLog || []).length
+      ? '<p class="empty-state">No events match the filter.</p>'
+      : '<p class="empty-state">No events yet — interact with the page to see lifecycle events appear here.</p>');
   }
 
   renderTimeline(snap.recentLog);
@@ -262,7 +277,7 @@ function renderTimeline(recentLog) {
   if (!el) return;
   const { lanes, minTs, maxTs } = buildTimelineLanes(recentLog);
   if (!lanes.length) {
-    el.innerHTML = '<i>no lifecycle events yet</i>';
+    el.innerHTML = '<p class="empty-state">No lifecycle events yet.</p>';
     return;
   }
   el.innerHTML = lanes.map((lane) => `
