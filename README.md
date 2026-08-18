@@ -127,6 +127,29 @@ Both are approximations for a live diagnostic signal, not certified MOS/VMAF mea
 | `simulateNetworkLoss` | Does the client's heartbeat/backoff logic detect a control-plane outage and recover once it clears, without killing media? Pick `durationMs` well past any known heartbeat interval so the outage is unambiguous. |
 | `setMediaFaultInjector` | Does the client tolerate real packet loss/reorder/duplication on live RTP media (concealment, jitter buffer, PLI/NACK requests) without treating it as a connection failure? |
 
+### Scenario compiler (natural-language → fault-injection primitives)
+
+`extension/scenario-compiler.js` is optional and not loaded by default. It's a small, deterministic keyword/regex DSL — not an LLM call — that compiles a short scenario phrase into a sequence of the primitives above, so an agent (or a thin LLM-backed helper upstream of this) can target a documented mapping instead of hand-picking API calls and durations:
+
+```js
+const { compileScenario, runCompiledScenario } = require('webrtc-inspector/extension/scenario-compiler.js'); // or a <script> global
+
+const compiled = compileScenario('drop packets for 3s then kill the connection', { connectionId: 1 });
+// compiled.steps -> [
+//   { primitive: 'simulateNetworkLoss', args: [3000, { targets: ['media'] }] },
+//   { primitive: 'killConnection', args: [1] },
+// ]
+// compiled.warnings -> [] (populated for clauses it couldn't map, or a
+// kill/restartIce clause with no connectionId in context)
+
+await runCompiledScenario(compiled, window.__webrtcInspector, { bundle: true });
+// runs each step in order (awaiting a simulateNetworkLoss/simulateNetworkPreset
+// step's `done` before starting the next), and attaches an exportBundle() (#4)
+// snapshot as `bundle` so the scenario and its outcome travel together.
+```
+
+A scenario is split into ordered clauses on `"then"`/`";"`. Each clause maps to one primitive, checked in priority order: a named preset (`"home wifi"` / `"4g train"` / `"congested mobile"`) → `simulateNetworkPreset`; `"kill"`/`"terminate"`/an abrupt disconnect → `killConnection`; `"restart ice"` → `restartIce`; otherwise a clause with a duration (`"for 5s"` / `"for 200ms"`) → `simulateNetworkLoss`, with `targets` inferred from keywords (`data channel`, `websocket`/`signaling`, `http`/`whip`/`whep`, `media`/`audio`/`video`/`rtp`/`packet`) and defaulting to `['websocket', 'datachannel']` when none match.
+
 ### Metrics export (Prometheus / OpenTelemetry)
 
 `extension/metrics-exporter.js` is optional and not loaded by default — `chrome://webrtc-internals`-style in-page history is capped and non-persistent, so for longer-running sessions or CI-style regression tracking, load it alongside `core/webrtc-inspector.js` and `panel-sparkline.js` (it reuses that file's bitrate/RTT/jitter/loss derivation) and call:
