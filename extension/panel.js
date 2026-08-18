@@ -17,6 +17,20 @@ const SPARKLINE_METRICS = [
 const SPARKLINE_W = 80;
 const SPARKLINE_H = 24;
 
+// #30 — match DevTools' own dark/light theme instead of hardcoding one
+// look. chrome.devtools.panels.themeName/onThemeChanged are available
+// directly in this panel's own page (it's part of the devtools extension),
+// no messaging from devtools.js needed. Today's values are 'dark' or
+// 'default' (light); anything else falls back to 'dark', this project's
+// original look, rather than an unstyled/unknown state.
+function applyTheme(themeName) {
+  document.documentElement.dataset.theme = resolveTheme(themeName);
+}
+if (chrome.devtools && chrome.devtools.panels) {
+  applyTheme(chrome.devtools.panels.themeName);
+  if (chrome.devtools.panels.onThemeChanged) chrome.devtools.panels.onThemeChanged.addListener(applyTheme);
+}
+
 function renderSparklines(connectionId, latestStats) {
   if (!latestStats) return '';
   const series = updateSparklineHistory(sparklineHistoryByConnection, connectionId, latestStats.reports, latestStats.ts);
