@@ -3,6 +3,11 @@
   "name": "WebRTC Inspector",
   "version": "1.4.0",
   "description": "Live inspection and injection for WebRTC peer connections, tracks, and data channels — DevTools panel UI.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
