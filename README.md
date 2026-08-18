@@ -90,7 +90,9 @@ Every track from patched `getUserMedia`/`getDisplayMedia` is tagged (`fake-mic`/
 
 ### MCP server
 
-`mcp/server.js` exposes the JSON-serializable API above as typed MCP tools (`wrtc_get_snapshot`, `wrtc_kill_connection`, `wrtc_restart_ice`, `wrtc_simulate_network_loss`, `wrtc_navigate`, etc.).
+`mcp/server.js` exposes the JSON-serializable API above as typed MCP tools (`wrtc_get_snapshot`, `wrtc_kill_connection`, `wrtc_restart_ice`, `wrtc_simulate_network_loss`, `wrtc_navigate`, `wrtc_status`, etc.).
+
+Call `wrtc_status` first. It never throws — returns `{cdpEndpoint, mode: 'attached'|'self-launched'|'disconnected', pageFound, pageUrl, inspectorLoaded, inspectorVersion}` even when nothing is connected yet, so an agent can check setup with no try/catch before calling anything else.
 
 - **Attaches** to an already-running Chromium over CDP when `WRTC_CDP_ENDPOINT` (default `http://localhost:9222`) is reachable.
 - **Self-launches** its own Chromium otherwise — no human needs to start Chrome first. `core/webrtc-inspector.js` is pre-injected via `addInitScript()` before any page script runs, same as the Playwright path. Headed by default (`WRTC_HEADLESS=true` for CI/headless use).

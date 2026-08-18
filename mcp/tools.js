@@ -6,7 +6,7 @@
 // replaceOutgoingTrack, getFakeMicTrack) can't cross that boundary and are not
 // exposed here — use core/webrtc-inspector.js directly in-page for those.
 const { z } = require('zod');
-const { getPage, navigate } = require('./browser');
+const { getPage, navigate, getStatus } = require('./browser');
 
 function textResult(value) {
   return { content: [{ type: 'text', text: JSON.stringify(value === undefined ? { ok: true } : value) }] };
@@ -32,6 +32,17 @@ function registerSimpleTool(server, cdpEndpoint, name, description, inputSchema,
 }
 
 function registerTools(server, cdpEndpoint) {
+  // #79 — call this first. Never returns isError, even when nothing is
+  // reachable — see getStatus()'s own contract in mcp/browser.js.
+  server.registerTool(
+    'wrtc_status',
+    {
+      description:
+        "Call this first to check setup before using other wrtc_ tools. Never throws — reports {cdpEndpoint, mode: 'attached'|'self-launched'|'disconnected', pageFound, pageUrl, inspectorLoaded, inspectorVersion} even when nothing is connected.",
+    },
+    async () => textResult(await getStatus(cdpEndpoint))
+  );
+
   // #78 — points the self-launched or attached browser at a target page.
   // Works even with no instrumented page yet: creates one and pre-injects
   // core/webrtc-inspector.js via addInitScript rather than erroring like
