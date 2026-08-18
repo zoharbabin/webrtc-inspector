@@ -35,6 +35,8 @@ The panel renders a per-connection/-WebSocket timeline of open/close/error lifec
 
 Right-click any `<video>`/`<audio>` element on the page → "Test this stream" overlays its live kind/status/quality metrics directly on the element (`extension/overlay.js`). The context-menu entry lives in a background service worker (`extension/background.js`, needs the `contextMenus` permission); `overlay.js` is a second, default-world content script (unlike `core/webrtc-inspector.js`'s `MAIN`-world script) since it needs `chrome.runtime` to receive the click — the two content scripts bridge via a `CustomEvent` on the shared `document` rather than a direct reference, since `MAIN`-world globals aren't visible from the default world.
 
+Per-site behavior (a `setLabeler`/`registerDecoder` pair tailored to one target site) is bundled in `extension/adapters.js` as an "adapter" — `{match(hostname, href), labeler?, decoders?}` — auto-selected by hostname on page load, so customizing behavior for a site no longer needs a fork of `core/webrtc-inspector.js`. Add an entry to that file's `ADAPTERS` array (a working `meet.jit.si` example ships as a template), or set `window.__webrtcInspectorAdapters` from an earlier-running script to override the built-in list entirely.
+
 ## API — `window.__webrtcInspector`
 
 | Method | Does |
