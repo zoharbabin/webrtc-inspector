@@ -102,6 +102,7 @@
       lastRemoteSdp: null,
       selectedCandidateType: null,
       candidateTypeFlips: [],
+      avSyncDeltaMs: null,
       pc,
     };
     connectionsById.set(id, record);
@@ -428,6 +429,7 @@
         if (record.statsHistory.length > config.maxStatsHistory) record.statsHistory.shift();
         updateLocalTrackQuality(record, summary.reports);
         updateCandidateTypeFlip(record, summary.reports);
+        updateAvSyncDelta(record, summary.reports);
       } catch (_) { /* getStats can race a just-closed connection */ }
     }, config.statsIntervalMs);
   }
@@ -471,6 +473,21 @@
       emit({ type: 'candidate-type-flip', connectionId: record.id, from: previous, to: type });
     }
     record.selectedCandidateType = type;
+  }
+
+  // jitterBufferDelay/jitterBufferEmittedCount on inbound-rtp are cumulative —
+  // dividing gives the running average delay a frame of that kind spent in the
+  // jitter buffer. A growing gap between the audio and video averages is
+  // exactly what produces visible lip-sync drift.
+  function avgJitterBufferDelayMs(report) {
+    if (!report || !report.jitterBufferEmittedCount) return null;
+    return (report.jitterBufferDelay / report.jitterBufferEmittedCount) * 1000;
+  }
+
+  function updateAvSyncDelta(record, reports) {
+    const audio = avgJitterBufferDelayMs(reports.find((r) => r.type === 'inbound-rtp' && r.kind === 'audio'));
+    const video = avgJitterBufferDelayMs(reports.find((r) => r.type === 'inbound-rtp' && r.kind === 'video'));
+    record.avSyncDeltaMs = audio != null && video != null ? audio - video : null;
   }
 
   // ---- remote audio metering ("listen" tap) ------------------------------
@@ -735,6 +752,7 @@
         remoteCandidateTypes: r.remoteCandidates.map((c) => c.type),
         selectedCandidateType: r.selectedCandidateType,
         candidateTypeFlips: r.candidateTypeFlips,
+        avSyncDeltaMs: r.avSyncDeltaMs,
         localSdpSummary: r.lastLocalSdp && r.lastLocalSdp.summary,
         remoteSdpSummary: r.lastRemoteSdp && r.lastRemoteSdp.summary,
       })),
