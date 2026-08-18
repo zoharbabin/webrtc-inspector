@@ -55,6 +55,7 @@
   let mediaFaultInjector = null; // {connId, kind, fn} | null — single active injector, mirrors ws/dc interceptors
   const transformedRtpEndpoints = new WeakSet(); // RTCRtpSender|RTCRtpReceiver already piped through our transform
   let labeler = null; // (meta) => string|null — single active hook, mirrors ws/dc interceptors
+  const iceCandidateFilters = new Map(); // connectionId -> predicateFn(candidateType, candidateStr) => boolean, false drops
 
   function emit(entry) {
     entry.ts = entry.ts || Date.now();
@@ -83,6 +84,29 @@
     if (!candidateStr) return null;
     const m = candidateStr.match(/typ (\w+)/);
     return m ? m[1] : null; // host | srflx | prflx | relay
+  }
+
+  // ---- ICE candidate filtering -----------------------------------------------
+  //
+  // setIceCandidateFilter(connId, fn) lets a consumer drop candidates by type
+  // before they reach addIceCandidate (incoming) or the page's own
+  // onicecandidate handler (outgoing) — e.g. drop all 'relay' to force a
+  // direct-only path, or drop all non-'relay' to force TURN-only. Per
+  // connectionId, unlike the single-active-hook interceptors above, since
+  // forcing different paths on different connections in the same test is a
+  // real use case.
+
+  function setIceCandidateFilter(connId, fn) { iceCandidateFilters.set(connId, fn); }
+  function clearIceCandidateFilter(connId) { iceCandidateFilters.delete(connId); }
+
+  function shouldDropCandidate(connId, candidateType, candidateStr) {
+    const fn = iceCandidateFilters.get(connId);
+    if (!fn) return false;
+    try {
+      return fn(candidateType, candidateStr) === false;
+    } catch (_) {
+      return false;
+    }
   }
 
   // ---- connection/socket labeler ---------------------------------------------
@@ -287,6 +311,11 @@
     pc.addEventListener('icecandidate', (ev) => {
       if (!ev.candidate) return; // null candidate marks end-of-candidates
       const type = parseCandidateType(ev.candidate.candidate);
+      if (shouldDropCandidate(id, type, ev.candidate.candidate)) {
+        emit({ type: 'ice-candidate-local-dropped', connectionId: id, candidateType: type });
+        ev.stopImmediatePropagation(); // registered before any page listener — prevents the app's own onicecandidate from ever seeing it
+        return;
+      }
       record.localCandidates.push({ ts: Date.now(), type, candidate: ev.candidate.candidate });
       emit({ type: 'ice-candidate-local', connectionId: id, candidateType: type });
     });
@@ -480,8 +509,13 @@
     const record = recordByPc.get(this);
     if (record && candidate) {
       const candStr = candidate.candidate || '';
-      record.remoteCandidates.push({ ts: Date.now(), type: parseCandidateType(candStr), candidate: candStr });
-      emit({ type: 'ice-candidate-remote', connectionId: record.id, candidateType: parseCandidateType(candStr) });
+      const type = parseCandidateType(candStr);
+      if (shouldDropCandidate(record.id, type, candStr)) {
+        emit({ type: 'ice-candidate-remote-dropped', connectionId: record.id, candidateType: type });
+        return Promise.resolve();
+      }
+      record.remoteCandidates.push({ ts: Date.now(), type, candidate: candStr });
+      emit({ type: 'ice-candidate-remote', connectionId: record.id, candidateType: type });
     }
     return originalAddIceCandidate.apply(this, [candidate]);
   };
@@ -1326,6 +1360,7 @@
       mediaFaultInjectorActive: !!mediaFaultInjector,
       suggestDecoderActive: !!suggestDecoder,
       labelerActive: !!labeler,
+      iceCandidateFilterActive: iceCandidateFilters.size > 0,
       ...(concise ? {} : { recentLog: log.slice(-100) }),
     };
   }
@@ -1503,6 +1538,8 @@
     clearSuggestDecoder,
     setLabeler,
     clearLabeler,
+    setIceCandidateFilter,
+    clearIceCandidateFilter,
     setWebSocketInterceptor,
     clearWebSocketInterceptor,
     setMediaFaultInjector,
