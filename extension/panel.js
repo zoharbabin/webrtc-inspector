@@ -53,6 +53,16 @@ document.getElementById('preserveLogChk').addEventListener('change', (e) => {
   if (!preserveLog) pageHistory = [];
 });
 
+// #32 — filter/search bar over the event log and connection/WebSocket
+// lists. Re-renders from the last-received snapshot on every keystroke
+// instead of waiting for the next poll, so filtering feels instant.
+let filterQuery = '';
+let lastRawSnap = null;
+document.getElementById('filterInput').addEventListener('input', (e) => {
+  filterQuery = e.target.value;
+  if (lastRawSnap !== null) renderSnapshot(lastRawSnap);
+});
+
 function renderSparklines(connectionId, latestStats) {
   if (!latestStats) return '';
   const series = updateSparklineHistory(sparklineHistoryByConnection, connectionId, latestStats.reports, latestStats.ts);
@@ -137,13 +147,17 @@ function renderSnapshot(snap) {
   }
   status.textContent = `${snap.connections.length} connection(s) · ${snap.webSockets.length} websocket(s) · fake mic ${snap.fakeMicActive ? 'armed' : 'not set'} · fake cam ${snap.fakeCamActive ? 'armed' : 'not set'} · dc interceptor ${snap.dataChannelInterceptorActive ? 'ON' : 'off'} · ws interceptor ${snap.webSocketInterceptorActive ? 'ON' : 'off'}`;
 
+  const filter = parseFilterQuery(filterQuery);
+  const filteredConnections = filterConnections(snap.connections, filter);
+  const filteredWebSockets = filterWebSockets(snap.webSockets, filter);
+
   copyTargets = [];
 
   function messageCopyRow(m) {
     return `${m.dir === 'out' ? '→' : '←'} ${escapeHtml(m.preview)} <button class="copy-btn" data-copy-idx="${registerCopyTarget(m)}">Copy</button>`;
   }
 
-  el.innerHTML = snap.connections.map((c) => `
+  el.innerHTML = filteredConnections.map((c) => `
     <div class="conn ${c.closed ? 'closed' : ''} ${c._stale ? 'stale' : ''}">
       <div class="row">
         <div><b>#${c.id}</b> <span class="badge ${badgeClass(c.state.connectionState)}">${c.state.connectionState}</span>
@@ -163,10 +177,10 @@ function renderSnapshot(snap) {
         <tr><th>ICE candidates</th><td>local: ${c.localCandidateTypes.join(', ') || '—'} / remote: ${c.remoteCandidateTypes.join(', ') || '—'}</td></tr>
       </table>
     </div>
-  `).join('') || '<i>no peer connections observed yet</i>';
+  `).join('') || (snap.connections.length ? '<i>no connections match the filter</i>' : '<i>no peer connections observed yet</i>');
 
   const wsEl = document.getElementById('websockets');
-  wsEl.innerHTML = snap.webSockets.map((s) => `
+  wsEl.innerHTML = filteredWebSockets.map((s) => `
     <div class="conn ${s.state === 'closed' ? 'closed' : ''} ${s._stale ? 'stale' : ''}">
       <div class="row">
         <div><b>ws#${s.id}</b> <span class="badge ${badgeClass(s.state)}">${s.state}</span> ${escapeHtml(s.url)}
@@ -177,15 +191,16 @@ function renderSnapshot(snap) {
         <tr><th>Last messages</th><td>${(s.lastMessages || []).map((m) => `<div class="msg-row">${messageCopyRow(m)}</div>`).join('') || '—'}</td></tr>
       </table>
     </div>
-  `).join('') || '<i>no websockets observed yet</i>';
+  `).join('') || (snap.webSockets.length ? '<i>no websockets match the filter</i>' : '<i>no websockets observed yet</i>');
 
   const logEl = document.getElementById('eventlog');
   if (logEl) {
-    const entries = (snap.recentLog || []).slice(-20).reverse();
+    const filteredLog = filterLogEntries(snap.recentLog || [], filter);
+    const entries = filteredLog.slice(-20).reverse();
     logEl.innerHTML = entries.map((entry) => `
       <div class="log-row ${entry._stale ? 'stale' : ''}">${new Date(entry.ts).toLocaleTimeString()} · ${escapeHtml(entry.type)}${entry.connectionId !== undefined ? ` · #${entry.connectionId}` : ''}${entry._stale ? ` <span class="badge">page load #${entry._gen}</span>` : ''}
         <button class="copy-btn" data-copy-idx="${registerCopyTarget(entry)}">Copy</button></div>
-    `).join('') || '<i>no events yet</i>';
+    `).join('') || ((snap.recentLog || []).length ? '<i>no events match the filter</i>' : '<i>no events yet</i>');
   }
 
   renderTimeline(snap.recentLog);
@@ -216,7 +231,8 @@ async function poll() {
   try {
     const snap = await evalInPage('window.__webrtcInspector && window.__webrtcInspector.getSnapshot()');
     if (snap) lastSnap = snap;
-    renderSnapshot(mergeSnapshotForRender(pageHistory, snap, preserveLog));
+    lastRawSnap = mergeSnapshotForRender(pageHistory, snap, preserveLog);
+    renderSnapshot(lastRawSnap);
   } catch (err) {
     document.getElementById('status').textContent = 'eval failed: ' + (err && err.value ? err.value : JSON.stringify(err));
   }
