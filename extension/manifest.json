@@ -6,7 +6,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["core/webrtc-inspector.js"],
+      "js": ["core/webrtc-inspector.js", "adapters.js"],
       "world": "MAIN",
       "run_at": "document_start",
       "all_frames": true
