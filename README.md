@@ -28,7 +28,7 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` c
 
 | Method | Does |
 |---|---|
-| `getSnapshot()` | Full state: connections, tracks, SDP/ICE summaries, data channels, WebSockets, stats, flags, last 100 log entries. JSON-serializable. |
+| `getSnapshot(opts?)` | Full state: connections, tracks, SDP/ICE summaries, data channels, WebSockets, stats, flags, last 100 log entries. JSON-serializable. `opts.detail: 'concise'` drops the raw stats report, log, and message-history dumps — keeps derived metrics (`qualityScore`, `avSyncDeltaMs`, candidate types, etc.) for routine health checks at a fraction of the tokens. Defaults to `'detailed'` (today's full output). |
 | `onEvent(fn)` | Subscribe to the live event log. |
 | `clearLog()` | Drop accumulated log/stats history. |
 | `getSdp(connId)` | `{local, remote}` full SDP for a connection. |

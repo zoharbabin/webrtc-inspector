@@ -830,7 +830,8 @@
     return { local: record.lastLocalSdp, remote: record.lastRemoteSdp };
   }
 
-  function getSnapshot() {
+  function getSnapshot(opts) {
+    const concise = !!opts && opts.detail === 'concise';
     return {
       connections: Array.from(connectionsById.values()).map((r) => ({
         id: r.id,
@@ -839,8 +840,11 @@
         state: r.state,
         localTracks: r.localTracks,
         remoteTracks: r.remoteTracks,
-        dataChannels: r.dataChannels.map((d) => ({ label: d.label, origin: d.origin, state: d.state, messageCount: d.messages.length, lastMessages: d.messages.slice(-10) })),
-        latestStats: r.statsHistory[r.statsHistory.length - 1] || null,
+        dataChannels: r.dataChannels.map((d) => ({
+          label: d.label, origin: d.origin, state: d.state, messageCount: d.messages.length,
+          ...(concise ? {} : { lastMessages: d.messages.slice(-10) }),
+        })),
+        ...(concise ? {} : { latestStats: r.statsHistory[r.statsHistory.length - 1] || null }),
         localCandidateTypes: r.localCandidates.map((c) => c.type),
         remoteCandidateTypes: r.remoteCandidates.map((c) => c.type),
         selectedCandidateType: r.selectedCandidateType,
@@ -857,13 +861,13 @@
         state: r.state,
         sentCount: r.sentCount,
         receivedCount: r.receivedCount,
-        lastMessages: r.messages.slice(-10),
+        ...(concise ? {} : { lastMessages: r.messages.slice(-10) }),
       })),
       fakeMicActive: !!fakeMic,
       fakeCamActive: !!fakeCam,
       dataChannelInterceptorActive: !!dataChannelInterceptor,
       webSocketInterceptorActive: !!webSocketInterceptor,
-      recentLog: log.slice(-100),
+      ...(concise ? {} : { recentLog: log.slice(-100) }),
     };
   }
 
