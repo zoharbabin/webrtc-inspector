@@ -34,10 +34,22 @@ module.exports = [
         atob: 'readonly',
         Uint8Array: 'readonly',
         alert: 'readonly',
+        module: 'readonly',
       },
     },
     rules: {
       'no-unused-vars': ['warn', { args: 'none', caughtErrors: 'none' }],
+    },
+  },
+  {
+    // panel-sparkline.js is loaded before panel.js as a plain <script>,
+    // exposing these as globals in the DevTools panel page.
+    files: ['extension/panel.js'],
+    languageOptions: {
+      globals: {
+        updateSparklineHistory: 'readonly',
+        sparklinePoints: 'readonly',
+      },
     },
   },
   {

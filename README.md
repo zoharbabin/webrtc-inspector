@@ -27,6 +27,8 @@ Must run before the page's own scripts grab references to these globals — see 
 
 MCP-style Playwright tools that only expose post-navigation `browser_evaluate` can't match `addInitScript`'s timing — anything created before `browser_evaluate` runs goes unpatched. Use the extension instead for that workflow.
 
+The DevTools panel renders a live bitrate/RTT/jitter/loss sparkline per connection, built client-side from each 1s `getSnapshot()` poll (`extension/panel-sparkline.js`) — not part of the `window.__webrtcInspector` API itself, since it's derived purely from data already exposed via `latestStats`.
+
 ## API — `window.__webrtcInspector`
 
 | Method | Does |

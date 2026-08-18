@@ -14,6 +14,10 @@
   .badge { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; background: #333; }
   .badge.connected { background: #1e5b1e; }
   .badge.failed, .badge.closed { background: #5b1e1e; }
+  .sparklines { display: flex; gap: 10px; margin: 4px 0; flex-wrap: wrap; }
+  .sparkline { display: flex; flex-direction: column; align-items: flex-start; }
+  .sparkline svg { background: #151515; border: 1px solid #333; border-radius: 2px; }
+  .sparkline .label { font-size: 10px; color: #888; margin-top: 2px; }
   input, textarea, button { background: #2d2d2d; color: #ddd; border: 1px solid #555; border-radius: 3px; padding: 3px 5px; }
   button { cursor: pointer; }
   button:hover { background: #3d3d3d; }
@@ -94,6 +98,7 @@
     <div id="lossStatus" style="color: #888; font-size: 11px; margin-top: 4px;"></div>
   </div>
 
+  <script src="panel-sparkline.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>
