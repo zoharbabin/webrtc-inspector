@@ -51,6 +51,7 @@
   let webSocketInterceptor = null;
   const decoders = []; // {id, matcher, decodeFn}, registration order = match priority
   let nextDecoderId = 1;
+  let suggestDecoder = null; // (payload, meta) => any | Promise<any> — single active advisory hook, mirrors ws/dc interceptors
   let mediaFaultInjector = null; // {connId, kind, fn} | null — single active injector, mirrors ws/dc interceptors
   const transformedRtpEndpoints = new WeakSet(); // RTCRtpSender|RTCRtpReceiver already piped through our transform
 
@@ -100,6 +101,46 @@
     };
   }
 
+  // Opt-in advisory layer on top of registerDecoder's no-match path (see #27):
+  // when nothing matches, hand the raw payload to a consumer-supplied hook
+  // (e.g. wired to an LLM call) that proposes a best-guess label. This library
+  // makes no LLM calls itself and never treats a suggestion as a decode —
+  // results are tagged advisory:true and land under `suggested`, never
+  // `decoded`, so a consumer can't mistake one for the other.
+  function setSuggestDecoder(fn) { suggestDecoder = fn; }
+  function clearSuggestDecoder() { suggestDecoder = null; }
+
+  function cappedSuggestionResult(value) {
+    let json;
+    try {
+      json = JSON.stringify(value);
+    } catch (err) {
+      return { decoderId: null, suggestionError: `suggestion not JSON-serializable: ${err.message}`, advisory: true };
+    }
+    if (json === undefined) return { decoderId: null, suggestionError: 'suggestion not JSON-serializable', advisory: true };
+    const suggested = json.length <= config.maxDecodedPreviewChars ? value : json.slice(0, config.maxDecodedPreviewChars) + '…';
+    return { decoderId: null, suggested, advisory: true };
+  }
+
+  function runSuggestDecoder(meta, data) {
+    if (!suggestDecoder) return null;
+    return normalizeDecodable(data).then((normalized) => {
+      let result;
+      try {
+        result = suggestDecoder(normalized, meta);
+      } catch (err) {
+        return { decoderId: null, suggestionError: String(err), advisory: true };
+      }
+      if (result && typeof result.then === 'function') {
+        return result.then(
+          (suggested) => cappedSuggestionResult(suggested),
+          (err) => ({ decoderId: null, suggestionError: String(err), advisory: true })
+        );
+      }
+      return cappedSuggestionResult(result);
+    });
+  }
+
   function cappedDecodedResult(decoderId, value) {
     let json;
     try {
@@ -120,14 +161,14 @@
   // never opt in), otherwise a Promise resolving to {decoderId, decoded} or
   // {decoderId, decodeError} — never rejects, a throwing decodeFn is caught.
   function runDecoders(meta, data) {
-    if (decoders.length === 0) return null;
+    if (decoders.length === 0) return runSuggestDecoder(meta, data);
     let match;
     for (const d of decoders) {
       try {
         if (d.matcher(meta)) { match = d; break; }
       } catch (_) { /* a throwing matcher just doesn't match */ }
     }
-    if (!match) return null;
+    if (!match) return runSuggestDecoder(meta, data);
     return normalizeDecodable(data).then((normalized) => {
       let result;
       try {
@@ -1251,6 +1292,7 @@
       dataChannelInterceptorActive: !!dataChannelInterceptor,
       webSocketInterceptorActive: !!webSocketInterceptor,
       mediaFaultInjectorActive: !!mediaFaultInjector,
+      suggestDecoderActive: !!suggestDecoder,
       ...(concise ? {} : { recentLog: log.slice(-100) }),
     };
   }
@@ -1422,6 +1464,8 @@
     setDataChannelInterceptor,
     clearDataChannelInterceptor,
     registerDecoder,
+    setSuggestDecoder,
+    clearSuggestDecoder,
     setWebSocketInterceptor,
     clearWebSocketInterceptor,
     setMediaFaultInjector,
