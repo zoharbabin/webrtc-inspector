@@ -25,6 +25,15 @@
   .msg-row { padding: 1px 0; }
   #eventlog { max-height: 150px; overflow-y: auto; border: 1px solid #333; padding: 2px 4px; }
   .log-row { border-bottom: 1px solid #333; padding: 2px 0; font-size: 11px; }
+  #timeline { border: 1px solid #333; padding: 4px; }
+  .timeline-lane { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+  .timeline-label { width: 60px; font-size: 10px; color: #9cdcfe; flex-shrink: 0; }
+  .timeline-track { position: relative; flex: 1; height: 12px; background: #151515; border-radius: 2px; }
+  .timeline-marker { position: absolute; top: 1px; width: 6px; height: 10px; border-radius: 1px; transform: translateX(-3px); }
+  .timeline-open { background: #4ec9b0; }
+  .timeline-close { background: #d16969; }
+  .timeline-error { background: #f44747; }
+  .timeline-state { background: #888; }
   #controls { border-top: 1px solid #444; padding-top: 8px; margin-top: 8px; }
   .field { margin-bottom: 4px; }
   label { display: inline-block; width: 90px; font-size: 11px; color: #aaa; }
@@ -39,6 +48,9 @@
 
   <h2>Recent events</h2>
   <div id="eventlog"></div>
+
+  <h2>Timeline</h2>
+  <div id="timeline"></div>
 
   <div id="controls">
     <h2>Inject audio into fake mic</h2>
@@ -107,6 +119,7 @@
 
   <script src="panel-sparkline.js"></script>
   <script src="panel-clipboard.js"></script>
+  <script src="panel-timeline.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>
