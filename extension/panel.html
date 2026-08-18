@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<title>WebRTC Inspector</title>
 <style>
   /* #30 — DevTools theme sync: panel.js sets documentElement's data-theme
      from chrome.devtools.panels.themeName ('dark' or 'default'/light) on
@@ -14,22 +15,39 @@
     --border: #444; --border-subtle: #333; --panel-bg: #151515;
     --badge-bg: #333; --badge-connected-bg: #1e5b1e; --badge-failed-bg: #5b1e1e;
     --input-bg: #2d2d2d; --input-border: #555; --button-hover-bg: #3d3d3d;
+    --card-bg: #242424; --danger: #e06c75; --danger-bg: #3a2323;
   }
   :root[data-theme="default"] {
     --fg: #202124; --bg: #ffffff; --accent: #1a73e8; --muted: #666; --label-color: #555;
     --border: #ccc; --border-subtle: #e0e0e0; --panel-bg: #f5f5f5;
     --badge-bg: #e0e0e0; --badge-connected-bg: #c8e6c9; --badge-failed-bg: #f8d7da;
     --input-bg: #f0f0f0; --input-border: #bbb; --button-hover-bg: #e8e8e8;
+    --card-bg: #fafafa; --danger: #c5221f; --danger-bg: #fce8e6;
   }
   /* #35 — dockable/pop-out: border-box sizing + overflow-wrap keep dense
      tabular data (SDP/stats, long URLs) from forcing horizontal scrollbars
      when docked at Chrome DevTools' narrowest width (~300px), without
-     needing separate narrow/wide layout rules — the same flex-based markup
-     already adapts up to a wide undocked window. */
-  *, *::before, *::after { box-sizing: border-box; }
-  body { font: 12px -apple-system, sans-serif; margin: 8px; color: var(--fg); background: var(--bg); overflow-wrap: anywhere; }
-  h2 { font-size: 13px; margin: 12px 0 4px; color: var(--accent); }
-  .conn { border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; }
+     needing separate narrow/wide layout rules — the same flex/grid-based
+     markup already adapts up to a wide undocked window. */
+  *, *::before, *::after { box-sizing: border-box; min-width: 0; }
+  body { font: 12px -apple-system, sans-serif; margin: 0; padding: 8px; color: var(--fg); background: var(--bg); overflow-wrap: anywhere; }
+
+  .app-header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .app-title { font-size: 14px; font-weight: 600; }
+  .chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10px; background: var(--badge-bg); color: var(--muted); }
+  .chip-active { background: var(--badge-connected-bg); color: var(--fg); }
+
+  .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 0; margin-bottom: 4px; }
+  .checkbox-field { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--label-color); white-space: nowrap; }
+  .filter-input { flex: 1; min-width: 160px; }
+  .hint { color: var(--muted); font-size: 10.5px; margin: 0 0 10px; }
+
+  section.card, section.actions { border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--card-bg); padding: 8px 10px; margin-bottom: 10px; }
+  section.card h2, section.actions h2 { font-size: 12.5px; margin: 0 0 2px; color: var(--accent); }
+  .section-desc, .card-desc { color: var(--muted); font-size: 10.5px; margin: 0 0 8px; }
+
+  .conn { border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; background: var(--bg); }
   .conn.closed { opacity: 0.5; }
   .stale, .log-row.stale { opacity: 0.45; }
   .row { display: flex; gap: 8px; }
@@ -43,16 +61,20 @@
   .sparkline { display: flex; flex-direction: column; align-items: flex-start; }
   .sparkline svg { background: var(--panel-bg); border: 1px solid var(--border-subtle); border-radius: 2px; }
   .sparkline .label { font-size: 10px; color: var(--muted); margin-top: 2px; }
-  input, textarea, button { background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border); border-radius: 3px; padding: 3px 5px; }
+  .empty-state { color: var(--muted); font-size: 11px; font-style: italic; margin: 2px 0; }
+
+  input, textarea, button, select { background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border); border-radius: 3px; padding: 3px 5px; font: inherit; }
   button { cursor: pointer; }
   button:hover { background: var(--button-hover-bg); }
+  .btn-primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .btn-danger { border-color: var(--danger); color: var(--danger); }
   .copy-btn { font-size: 10px; padding: 0 4px; margin-left: 4px; }
   .msg-row { padding: 1px 0; }
-  #recordBtn.recording { background: #5b1e1e; color: #fff; border-color: #a33; }
+  #recordBtn.recording { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
   .shot-thumb { width: 100px; max-width: 100%; border: 1px solid var(--border-subtle); border-radius: 2px; margin-top: 2px; cursor: pointer; }
-  #eventlog { max-height: 150px; overflow-y: auto; border: 1px solid var(--border-subtle); padding: 2px 4px; }
+  #eventlog { max-height: 150px; overflow-y: auto; border: 1px solid var(--border-subtle); border-radius: 3px; padding: 2px 4px; background: var(--bg); }
   .log-row { border-bottom: 1px solid var(--border-subtle); padding: 2px 0; font-size: 11px; }
-  #timeline { border: 1px solid var(--border-subtle); padding: 4px; }
+  #timeline { border: 1px solid var(--border-subtle); border-radius: 3px; padding: 4px; background: var(--bg); }
   .timeline-lane { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
   .timeline-label { width: 60px; font-size: 10px; color: var(--accent); flex-shrink: 0; }
   .timeline-track { position: relative; flex: 1; height: 12px; background: var(--panel-bg); border-radius: 2px; }
@@ -61,92 +83,157 @@
   .timeline-close { background: #d16969; }
   .timeline-error { background: #f44747; }
   .timeline-state { background: var(--muted); }
-  #controls { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
+
+  .actions-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; align-items: start; }
+  .action-card { border: 1px solid var(--border); border-radius: 4px; background: var(--bg); padding: 6px 8px; }
+  .action-card > summary { cursor: pointer; padding: 2px 0; }
+  .action-card > summary::-webkit-details-marker { margin-top: 2px; }
+  .action-card .card-title { display: block; font-weight: 600; font-size: 11.5px; }
+  .action-card .card-desc { display: block; color: var(--muted); font-size: 10.5px; margin: 2px 0 0; font-weight: normal; }
+  .action-card[open] > summary { margin-bottom: 6px; }
   .field { margin-bottom: 4px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  label { display: inline-block; width: 90px; font-size: 11px; color: var(--label-color); }
+  .field label { display: inline-block; width: 90px; flex-shrink: 0; font-size: 11px; color: var(--label-color); }
+  .field input:not(.w-num), .field select { flex: 1; min-width: 80px; }
+  .w-num { width: 64px; flex: none; }
+  .card-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .card-status { color: var(--muted); font-size: 11px; margin-top: 4px; }
   #status { color: var(--muted); font-size: 11px; }
 </style>
 </head>
 <body>
-  <div id="status">connecting…</div>
-  <div class="field"><label style="width: auto;"><input type="checkbox" id="preserveLogChk"> Preserve log across reloads</label></div>
-  <div class="field"><input id="filterInput" style="width: 60%" placeholder="Filter: free text, type:websocket-message, conn:3, dir:out"></div>
-  <div class="field"><button id="recordBtn">⏺ Record screenshots</button>
-    <span style="color: var(--muted); font-size: 11px;">captures on connection-created / track-added / reconnect while armed</span></div>
-  <div id="connections"></div>
-  <h2>WebSockets</h2>
-  <div id="websockets"></div>
+  <header class="app-header">
+    <span class="app-title">WebRTC Inspector</span>
+    <div id="status" class="chip-row">connecting…</div>
+  </header>
 
-  <h2>Recent events</h2>
-  <div id="eventlog"></div>
-
-  <h2>Timeline</h2>
-  <div id="timeline"></div>
-
-  <div id="controls">
-    <h2>Inject audio into fake mic</h2>
-    <div class="field"><label>base64 audio</label><input id="audioB64" style="width: 60%" placeholder="base64-encoded WAV/MP3"></div>
-    <button id="injectAudioBtn">Set + Play</button>
-    <button id="replayBtn">Replay last</button>
-
-    <h2>Send data-channel message</h2>
-    <div class="field"><label>connection id</label><input id="dcConnId" style="width: 60px" type="number"></div>
-    <div class="field"><label>channel label</label><input id="dcLabel" style="width: 150px"></div>
-    <div class="field"><label>message</label><input id="dcMessage" style="width: 60%"></div>
-    <button id="sendDcBtn">Send</button>
-
-    <h2>Replace outgoing track</h2>
-    <div class="field"><label>connection id</label><input id="rtConnId" style="width: 60px" type="number"></div>
-    <div class="field"><label>kind</label>
-      <select id="rtKind"><option value="audio">audio</option><option value="video">video</option></select>
-    </div>
-    <button id="replaceTrackBtn">Replace with current fake-mic track</button>
-
-    <h2>Fake camera</h2>
-    <div class="field"><label>width x height</label><input id="camW" style="width: 50px" type="number" value="320"> x <input id="camH" style="width: 50px" type="number" value="240"></div>
-    <div class="field"><label>text</label><input id="camText" style="width: 150px" value="webrtc-inspector"></div>
-    <button id="setFakeCamBtn">Set fake camera</button>
-    <button id="clearFakeCamBtn">Clear (restore real camera)</button>
-
-    <h2>Data-channel interceptor</h2>
-    <div class="field"><label>direction</label>
-      <select id="icDir"><option value="out">outgoing</option><option value="in">incoming</option><option value="">both</option></select>
-    </div>
-    <div class="field"><label>action</label>
-      <select id="icAction"><option value="uppercase">uppercase text</option><option value="block">block</option></select>
-    </div>
-    <button id="setInterceptorBtn">Install</button>
-    <button id="clearInterceptorBtn">Remove</button>
-    <div id="interceptorStatus" style="color: #888; font-size: 11px; margin-top: 4px;"></div>
-
-    <h2>Send WebSocket message</h2>
-    <div class="field"><label>socket id</label><input id="wsSocketId" style="width: 60px" type="number"></div>
-    <div class="field"><label>message</label><input id="wsMessage" style="width: 60%"></div>
-    <button id="sendWsBtn">Send</button>
-    <button id="injectWsBtn">Inject as incoming</button>
-
-    <h2>WebSocket interceptor</h2>
-    <div class="field"><label>direction</label>
-      <select id="wsIcDir"><option value="out">outgoing</option><option value="in">incoming</option><option value="">both</option></select>
-    </div>
-    <div class="field"><label>action</label>
-      <select id="wsIcAction"><option value="uppercase">uppercase text</option><option value="block">block</option></select>
-    </div>
-    <button id="setWsInterceptorBtn">Install</button>
-    <button id="clearWsInterceptorBtn">Remove</button>
-    <div id="wsInterceptorStatus" style="color: #888; font-size: 11px; margin-top: 4px;"></div>
-
-    <h2>Network-loss / reconnect testing</h2>
-    <div class="field"><label>connection id</label><input id="killConnId" style="width: 60px" type="number"></div>
-    <button id="killConnBtn">Kill connection (real pc.close())</button>
-    <div class="field"><label>duration (ms)</label><input id="lossDuration" style="width: 80px" type="number" value="15000"></div>
-    <div class="field"><label>targets</label>
-      <select id="lossTargets"><option value="both">websocket + datachannel</option><option value="websocket">websocket only</option><option value="datachannel">datachannel only</option></select>
-    </div>
-    <button id="simulateLossBtn">Simulate signaling outage</button>
-    <button id="stopLossBtn">Restore now</button>
-    <div id="lossStatus" style="color: #888; font-size: 11px; margin-top: 4px;"></div>
+  <div class="toolbar">
+    <label class="checkbox-field"><input type="checkbox" id="preserveLogChk"> Preserve log across reloads</label>
+    <input id="filterInput" class="filter-input" placeholder="Filter: free text, type:websocket-message, conn:3, dir:out">
+    <button id="recordBtn">⏺ Record screenshots</button>
   </div>
+  <p class="hint">While recording, screenshots are captured automatically on connection-created, track-added, and reconnect events.</p>
+
+  <section class="card">
+    <h2>Peer connections</h2>
+    <p class="section-desc">Live RTCPeerConnection state, tracks, data channels, and SDP observed on this page.</p>
+    <div id="connections"></div>
+  </section>
+
+  <section class="card">
+    <h2>WebSockets</h2>
+    <p class="section-desc">Signaling and application WebSocket traffic observed on this page.</p>
+    <div id="websockets"></div>
+  </section>
+
+  <section class="card">
+    <h2>Recent events</h2>
+    <p class="section-desc">Last 20 lifecycle events, newest first. Use the filter above to narrow by free text, <code>type:</code>, <code>conn:</code>, or <code>dir:</code>.</p>
+    <div id="eventlog"></div>
+  </section>
+
+  <section class="card">
+    <h2>Timeline</h2>
+    <p class="section-desc">Open, close, and error events per connection and channel, plotted over time.</p>
+    <div id="timeline"></div>
+  </section>
+
+  <section class="actions">
+    <h2>Fault injection &amp; test controls</h2>
+    <p class="section-desc">These call the real webrtc-inspector API on the inspected page — actions here affect what the app under test actually sends, receives, and sees. Click a card to expand its controls.</p>
+
+    <div class="actions-grid">
+      <details class="action-card">
+        <summary><span class="card-title">Inject audio into fake mic</span><span class="card-desc">Feeds base64-encoded audio into the fake microphone track so the app receives it as real mic input.</span></summary>
+        <div class="field"><label>base64 audio</label><input id="audioB64" placeholder="base64-encoded WAV/MP3"></div>
+        <div class="card-actions">
+          <button id="injectAudioBtn" class="btn-primary">Set + Play</button>
+          <button id="replayBtn">Replay last</button>
+        </div>
+      </details>
+
+      <details class="action-card">
+        <summary><span class="card-title">Send data-channel message</span><span class="card-desc">Sends a message on an existing RTCDataChannel as if the app itself sent it.</span></summary>
+        <div class="field"><label>connection id</label><input id="dcConnId" type="number" class="w-num"></div>
+        <div class="field"><label>channel label</label><input id="dcLabel"></div>
+        <div class="field"><label>message</label><input id="dcMessage"></div>
+        <div class="card-actions"><button id="sendDcBtn" class="btn-primary">Send</button></div>
+      </details>
+
+      <details class="action-card">
+        <summary><span class="card-title">Replace outgoing track</span><span class="card-desc">Swaps a connection's outgoing audio/video track for the current fake-mic track, mid-call.</span></summary>
+        <div class="field"><label>connection id</label><input id="rtConnId" type="number" class="w-num"></div>
+        <div class="field"><label>kind</label>
+          <select id="rtKind"><option value="audio">audio</option><option value="video">video</option></select>
+        </div>
+        <div class="card-actions"><button id="replaceTrackBtn" class="btn-primary">Replace with fake-mic track</button></div>
+      </details>
+
+      <details class="action-card">
+        <summary><span class="card-title">Fake camera</span><span class="card-desc">Replaces the real camera with a generated test pattern of the given size and label text.</span></summary>
+        <div class="field"><label>width × height</label><input id="camW" type="number" value="320" class="w-num"> <input id="camH" type="number" value="240" class="w-num"></div>
+        <div class="field"><label>text</label><input id="camText" value="webrtc-inspector"></div>
+        <div class="card-actions">
+          <button id="setFakeCamBtn" class="btn-primary">Set fake camera</button>
+          <button id="clearFakeCamBtn">Restore real camera</button>
+        </div>
+      </details>
+
+      <details class="action-card">
+        <summary><span class="card-title">Data-channel interceptor</span><span class="card-desc">Intercepts every data-channel message in the chosen direction and blocks or rewrites it before it reaches the app.</span></summary>
+        <div class="field"><label>direction</label>
+          <select id="icDir"><option value="out">outgoing</option><option value="in">incoming</option><option value="">both</option></select>
+        </div>
+        <div class="field"><label>action</label>
+          <select id="icAction"><option value="uppercase">uppercase text</option><option value="block">block</option></select>
+        </div>
+        <div class="card-actions">
+          <button id="setInterceptorBtn" class="btn-primary">Install</button>
+          <button id="clearInterceptorBtn">Remove</button>
+        </div>
+        <div id="interceptorStatus" class="card-status"></div>
+      </details>
+
+      <details class="action-card">
+        <summary><span class="card-title">Send WebSocket message</span><span class="card-desc">Sends on an open WebSocket, or injects a message as if it arrived from the server.</span></summary>
+        <div class="field"><label>socket id</label><input id="wsSocketId" type="number" class="w-num"></div>
+        <div class="field"><label>message</label><input id="wsMessage"></div>
+        <div class="card-actions">
+          <button id="sendWsBtn" class="btn-primary">Send</button>
+          <button id="injectWsBtn">Inject as incoming</button>
+        </div>
+      </details>
+
+      <details class="action-card">
+        <summary><span class="card-title">WebSocket interceptor</span><span class="card-desc">Intercepts every WebSocket message in the chosen direction and blocks or rewrites it before it reaches the app.</span></summary>
+        <div class="field"><label>direction</label>
+          <select id="wsIcDir"><option value="out">outgoing</option><option value="in">incoming</option><option value="">both</option></select>
+        </div>
+        <div class="field"><label>action</label>
+          <select id="wsIcAction"><option value="uppercase">uppercase text</option><option value="block">block</option></select>
+        </div>
+        <div class="card-actions">
+          <button id="setWsInterceptorBtn" class="btn-primary">Install</button>
+          <button id="clearWsInterceptorBtn">Remove</button>
+        </div>
+        <div id="wsInterceptorStatus" class="card-status"></div>
+      </details>
+
+      <details class="action-card">
+        <summary><span class="card-title">Network-loss / reconnect testing</span><span class="card-desc">Kill a connection outright, or drop signaling/data traffic for a duration to test reconnect logic.</span></summary>
+        <div class="field"><label>connection id</label><input id="killConnId" type="number" class="w-num"></div>
+        <div class="card-actions"><button id="killConnBtn" class="btn-danger">Kill connection (real pc.close())</button></div>
+        <div class="field"><label>duration (ms)</label><input id="lossDuration" type="number" value="15000" class="w-num"></div>
+        <div class="field"><label>targets</label>
+          <select id="lossTargets"><option value="both">websocket + datachannel</option><option value="websocket">websocket only</option><option value="datachannel">datachannel only</option></select>
+        </div>
+        <div class="card-actions">
+          <button id="simulateLossBtn" class="btn-primary">Simulate signaling outage</button>
+          <button id="stopLossBtn">Restore now</button>
+        </div>
+        <div id="lossStatus" class="card-status"></div>
+      </details>
+    </div>
+  </section>
 
   <script src="panel-sparkline.js"></script>
   <script src="panel-clipboard.js"></script>

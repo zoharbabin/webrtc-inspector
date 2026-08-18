@@ -75,6 +75,9 @@ test.describe('panel.html layout across dock widths', () => {
   test('a two-column field (label + input) wraps instead of overflowing at 300px', async ({ page }) => {
     await page.setViewportSize({ width: 300, height: 800 });
     await loadPanel(page);
+    // Action cards are collapsed by default (progressive disclosure) — open
+    // the one containing #dcMessage before measuring it.
+    await page.locator('#dcMessage').locator('xpath=ancestor::details').evaluate((el) => { el.open = true; });
     const field = page.locator('#dcMessage').locator('xpath=..');
     const box = await field.boundingBox();
     expect(box.width).toBeLessThanOrEqual(300);
