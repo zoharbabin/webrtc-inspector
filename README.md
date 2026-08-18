@@ -52,6 +52,7 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` c
 | `injectWebSocketMessage(socketId, data)` | Synthetic incoming `message` event — no real network involved. |
 | `sendOnWebSocket(socketId, data)` | Real `send()` on a tracked socket, as if the app called it. |
 | `killConnection(connId)` | Real `pc.close()` — genuine abrupt transport death. Tests cold-reconnect, not blip recovery. |
+| `restartIce(connId)` | Real `pc.restartIce()` — renegotiate-in-place without tearing down the connection. Tests a materially different recovery path than `killConnection`: vendors that only handle one of the two correctly are a real failure mode. |
 | `simulateNetworkLoss(durationMs, {targets})` | Real dropped sends on `websocket`/`datachannel` (default both) for `durationMs`, then auto-restore. Add `'http'` to `targets` to also fail every `fetch`/`XMLHttpRequest` for the duration (real rejection/error, request never sent) — covers HTTP-polled signaling (WHIP/WHEP). Add `'media'` to drop every real encoded audio/video frame for the duration, via `setMediaFaultInjector` underneath (Chromium-only, same as that primitive) — restores whatever media fault injector, if any, was already active. Composes with any active interceptor. Returns `{stop, done}`. |
 | `setMediaFaultInjector(connId, kind, fn)` / `clearMediaFaultInjector()` | Fault injection on real, already-encoded RTP media frames via Insertable Streams. `connId`/`kind` (`'audio'`\|`'video'`) scope which sender/receiver `fn` runs for — `null` for either matches all. `fn(direction, frame, meta)` runs per frame, `direction: 'outgoing'` (sender, pre-network) \| `'incoming'` (receiver, post-network), `frame` is the live `RTCEncodedVideoFrame`/`RTCEncodedAudioFrame`, `meta = {connId, kind, trackId}`. To corrupt: mutate `frame.data` in place (a writable `ArrayBuffer`) and return nothing — the mutated frame flows through. To drop: return `false`. To duplicate: return `'duplicate'`. To delay (and, by giving neighboring frames different delays, reorder): return `{delayMs}`. Only one injector active at a time, same convention as the data-channel/WebSocket interceptors. Chromium-only (`RTCRtpSender`/`Receiver.createEncodedStreams()` isn't a cross-browser standard yet) — no-ops elsewhere. |
 
@@ -70,11 +71,12 @@ Both are approximations for a live diagnostic signal, not certified MOS/VMAF mea
 
 `browserContext.setOffline()` and DevTools' `Network.emulateNetworkConditions` don't touch already-flowing WebRTC UDP media — both act on the network-service layer, which WebRTC bypasses. `pfctl`/`tc` (OS-level) is the traditional fallback; `setMediaFaultInjector` (Chromium only) is the page-JS-only alternative for already-flowing media.
 
-`killConnection`, `simulateNetworkLoss`, and `setMediaFaultInjector` are the real alternatives — each tests a different failure mode:
+`killConnection`, `restartIce`, `simulateNetworkLoss`, and `setMediaFaultInjector` are the real alternatives — each tests a different failure mode:
 
 | Primitive | Tests |
 |---|---|
 | `killConnection` | Does the client detect the peer connection is gone and start a fresh session? (abrupt death, not a blip) |
+| `restartIce` | Does the client's renegotiate-in-place path recover without tearing down the connection? A materially different code path than `killConnection`'s full teardown — vendors that only handle one correctly are a real failure mode. |
 | `simulateNetworkLoss` | Does the client's heartbeat/backoff logic detect a control-plane outage and recover once it clears, without killing media? Pick `durationMs` well past any known heartbeat interval so the outage is unambiguous. |
 | `setMediaFaultInjector` | Does the client tolerate real packet loss/reorder/duplication on live RTP media (concealment, jitter buffer, PLI/NACK requests) without treating it as a connection failure? |
 

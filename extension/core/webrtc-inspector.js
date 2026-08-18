@@ -1060,6 +1060,15 @@
     stopStatsPolling(record);
   }
 
+  // Renegotiate-in-place, distinct from killConnection()'s full teardown —
+  // exercises a materially different recovery path in the client under test.
+  function restartIce(connectionId) {
+    const record = connectionsById.get(connectionId);
+    if (!record) throw new Error(`No connection with id ${connectionId}`);
+    emit({ type: 'ice-restart', connectionId, iceConnectionState: record.pc.iceConnectionState, connectionState: record.pc.connectionState });
+    record.pc.restartIce();
+  }
+
   function simulateNetworkLoss(durationMs, options) {
     const opts = Object.assign({ targets: ['websocket', 'datachannel'] }, options);
     const wantWs = opts.targets.includes('websocket');
@@ -1360,6 +1369,7 @@
     injectWebSocketMessage,
     sendOnWebSocket,
     killConnection,
+    restartIce,
     simulateNetworkLoss,
     onEvent: (cb) => { listeners.add(cb); return () => listeners.delete(cb); },
     clearLog: () => { log.length = 0; },
