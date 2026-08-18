@@ -21,6 +21,7 @@ Must run before the page's own scripts grab references to these globals — see 
 | Chrome extension | Interactive, ad hoc inspection | `chrome://extensions` → Developer mode → Load unpacked → `extension/`. DevTools → "WebRTC Inspector" panel. |
 | Playwright | Scripted/automated tests | `await page.addInitScript({ path: 'core/webrtc-inspector.js' }); await page.goto(url);` — runs before any page script, on every navigation. |
 | DevTools console paste | One-off manual inspection | Paste `core/webrtc-inspector.js` into the console *before* the connection you want to inspect is created. |
+| MCP server | Any MCP client (Claude Code, etc.) driving/inspecting a real browser | `mcp/server.js` — see [MCP server](#mcp-server-window__webrtcinspector-as-typed-tools) below. |
 
 `extension/core/webrtc-inspector.js` is canonical; `core/webrtc-inspector.js` is a symlink to it. Keep it that way — a symlink pointing *outside* `extension/` silently loads as empty under Chrome's unpacked-extension loader (sandboxed to the selected folder), with no error.
 
@@ -57,6 +58,21 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` c
 | `setMediaFaultInjector(connId, kind, fn)` / `clearMediaFaultInjector()` | Fault injection on real, already-encoded RTP media frames via Insertable Streams. `connId`/`kind` (`'audio'`\|`'video'`) scope which sender/receiver `fn` runs for — `null` for either matches all. `fn(direction, frame, meta)` runs per frame, `direction: 'outgoing'` (sender, pre-network) \| `'incoming'` (receiver, post-network), `frame` is the live `RTCEncodedVideoFrame`/`RTCEncodedAudioFrame`, `meta = {connId, kind, trackId}`. To corrupt: mutate `frame.data` in place (a writable `ArrayBuffer`) and return nothing — the mutated frame flows through. To drop: return `false`. To duplicate: return `'duplicate'`. To delay (and, by giving neighboring frames different delays, reorder): return `{delayMs}`. Only one injector active at a time, same convention as the data-channel/WebSocket interceptors. Chromium-only (`RTCRtpSender`/`Receiver.createEncodedStreams()` isn't a cross-browser standard yet) — no-ops elsewhere. |
 
 Every track from patched `getUserMedia`/`getDisplayMedia` is tagged (`fake-mic`/`real-device`/`display-capture`/`fake-cam`) and the tag follows it into connection logging — `getSnapshot()` shows exactly which connection consumed which source.
+
+### MCP server: `window.__webrtcInspector` as typed tools
+
+`mcp/server.js` exposes the JSON-serializable parts of the API above as typed MCP tools (`wrtc_get_snapshot`, `wrtc_kill_connection`, `wrtc_restart_ice`, `wrtc_simulate_network_loss`, etc.) instead of requiring an MCP client to string-inject via `page.evaluate`/`chrome.devtools.inspectedWindow.eval`. Same motivation as [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp): raw `eval` strings are "programming with a blindfold on."
+
+It attaches to an **already-running** Chromium over CDP — it doesn't launch its own browser. Start Chrome with remote debugging enabled and navigate to a page that's already loaded `core/webrtc-inspector.js`, then point the server at it:
+
+```sh
+google-chrome --remote-debugging-port=9222   # or Chromium/Playwright-launched, same flag
+WRTC_CDP_ENDPOINT=http://localhost:9222 node mcp/server.js   # defaults to that URL if unset
+```
+
+Wire it into an MCP client's config (e.g. Claude Code) by pointing at `mcp/server.js` as the command, with `WRTC_CDP_ENDPOINT` set if not using the default port.
+
+Tools cover the pure-JSON-in/JSON-out surface: snapshots/diffs/bundles/captures, `getSdp`, `killConnection`, `restartIce`, `simulateNetworkLoss`, `capEncoding`, fake mic/cam, and data-channel/WebSocket message injection. `simulateNetworkLoss` awaits the full outage in-page and returns once it's done — there's no early-`stop()` handle across the MCP boundary. Methods that take or return a live JS reference (`setMediaFaultInjector`, `setDataChannelInterceptor`, `setWebSocketInterceptor`, `registerDecoder`, `onEvent`, `replaceOutgoingTrack`, `getFakeMicTrack`) can't cross that boundary and aren't exposed here — use `core/webrtc-inspector.js` directly in-page for those.
 
 ### `qualityScore` (MOS-style, 1-5)
 
@@ -95,6 +111,8 @@ Tracked as issues: https://github.com/zoharbabin/webrtc-inspector/issues
 ## Testing
 
 Playwright suite under `test/specs/`, one file per feature area (peer connections, data channels, WebSockets, fake mic/cam, network-fault primitives). Every spec connects two `RTCPeerConnection`s directly in one page (no signaling server) via the shared helper in `test/fixtures/session-helpers.js`.
+
+`test/specs/mcp-server.spec.js` is the exception: it launches a real Chromium with `--remote-debugging-port`, spawns `mcp/server.js` as a real subprocess over stdio via the MCP SDK's `Client`, and drives a real loopback session through the MCP tools end to end.
 
 ```sh
 npm install
