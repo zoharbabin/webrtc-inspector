@@ -1437,6 +1437,96 @@
     };
   }
 
+  // ---- webrtc-internals-compatible dump export (#20) -------------------------
+  //
+  // Matches the JSON shape chrome://webrtc-internals' "Create Dump" produces
+  // (verified against the still-maintained rtcstats/rtcstats dump-importer's
+  // parser, since Chrome's own dump writer isn't public source we can pin to):
+  // {UserAgent, getUserMedia, PeerConnections: {<id>: {url, rtcConfiguration,
+  // updateLog, stats}}}. `stats` is a flat map keyed `<statId>-<property>`,
+  // each `{statsType, values}` with `values` a JSON-stringified array aligned
+  // index-for-index with that stat's own `<statId>-timestamp` entry — the
+  // importer reads timestamps and values as parallel arrays, not paired
+  // objects. Padding every property to the timestamp array's length (instead
+  // of relying on trailing-alignment for late-appearing properties, a
+  // documented real-dump quirk) sidesteps that ambiguity entirely.
+  //
+  // updateLog translates our event log's well-known state-change/SDP-set
+  // types to the exact names the importer special-cases (so state timelines
+  // and SDP diffing render), and passes every other event through under its
+  // own type name with its extra fields as the JSON value — no event is
+  // dropped, just not specially rendered. SDP text reflects the connection's
+  // *current* local/remote description, not a full renegotiation history,
+  // since only the latest is retained per connection.
+  function buildInternalsUpdateLog(record) {
+    return log.filter((e) => e.connectionId === record.id).map((e) => {
+      let type = e.type;
+      let value;
+      if (e.type === 'ice-state') { type = 'iceconnectionstatechange'; value = e.state; }
+      else if (e.type === 'connection-state') { type = 'connectionstatechange'; value = e.state; }
+      else if (e.type === 'signaling-state') { type = 'signalingstatechange'; value = e.state; }
+      else if (e.type === 'local-description-set') {
+        type = 'setLocalDescription';
+        value = JSON.stringify({ type: e.sdpType, sdp: record.lastLocalSdp ? record.lastLocalSdp.sdp : '' });
+      } else if (e.type === 'remote-description-set') {
+        type = 'setRemoteDescription';
+        value = JSON.stringify({ type: e.sdpType, sdp: record.lastRemoteSdp ? record.lastRemoteSdp.sdp : '' });
+      } else {
+        const rest = { ...e };
+        delete rest.type;
+        delete rest.connectionId;
+        delete rest.ts;
+        value = JSON.stringify(rest);
+      }
+      return { time: new Date(e.ts).toString(), timestamp: e.ts, type, value };
+    });
+  }
+
+  function buildInternalsStats(record) {
+    const byId = new Map(); // statId -> {statsType, timestamps: [], props: Map<prop, value[]>}
+    record.statsHistory.forEach(({ ts, reports }) => {
+      reports.forEach((report) => {
+        let entry = byId.get(report.id);
+        if (!entry) { entry = { statsType: report.type, timestamps: [], props: new Map() }; byId.set(report.id, entry); }
+        entry.timestamps.push(ts);
+        const tickIndex = entry.timestamps.length - 1;
+        Object.keys(report).forEach((key) => {
+          if (key === 'id' || key === 'type' || key === 'timestamp') return;
+          if (!entry.props.has(key)) entry.props.set(key, []);
+          const values = entry.props.get(key);
+          while (values.length < tickIndex) values.push(null);
+          values.push(report[key]);
+        });
+      });
+    });
+    const stats = {};
+    byId.forEach((entry, id) => {
+      stats[`${id}-timestamp`] = { statsType: entry.statsType, values: JSON.stringify(entry.timestamps) };
+      entry.props.forEach((values, prop) => {
+        while (values.length < entry.timestamps.length) values.push(null);
+        stats[`${id}-${prop}`] = { statsType: entry.statsType, values: JSON.stringify(values) };
+      });
+    });
+    return stats;
+  }
+
+  function exportWebrtcInternalsDump() {
+    const peerConnections = {};
+    connectionsById.forEach((record) => {
+      peerConnections[String(record.id)] = {
+        url: location.href,
+        rtcConfiguration: record.configuration,
+        updateLog: buildInternalsUpdateLog(record),
+        stats: buildInternalsStats(record),
+      };
+    });
+    return {
+      UserAgent: navigator.userAgent,
+      getUserMedia: [],
+      PeerConnections: peerConnections,
+    };
+  }
+
   // ---- capture / diff for regression fixtures --------------------------------
   //
   // captureEvents() snapshots the event stream as-is (shallow copy, so later
@@ -1571,6 +1661,7 @@
     getSnapshot,
     getSnapshotDiff,
     exportBundle,
+    exportWebrtcInternalsDump,
     captureEvents,
     diffCaptures,
     getSdp,

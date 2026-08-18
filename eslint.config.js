@@ -35,6 +35,7 @@ module.exports = [
         Uint8Array: 'readonly',
         alert: 'readonly',
         module: 'readonly',
+        location: 'readonly',
       },
     },
     rules: {

@@ -66,6 +66,7 @@ test.describe('MCP server tools', () => {
         'wrtc_simulate_network_loss',
         'wrtc_register_network_preset',
         'wrtc_simulate_network_preset',
+        'wrtc_export_webrtc_internals_dump',
       ])
     );
   });
@@ -137,5 +138,24 @@ test.describe('MCP server tools', () => {
   test('wrtc_simulate_network_preset on an unknown name comes back as an MCP tool error', async () => {
     const result = await callTool('wrtc_simulate_network_preset', { name: 'no-such-preset' });
     expect(result.isError).toBe(true);
+  });
+
+  test('wrtc_export_webrtc_internals_dump matches the chrome://webrtc-internals dump shape', async () => {
+    const { connectionIdA } = await mcpPage.evaluate(() => window.testHelpers.createLoopbackSession('mcp-session-dump'));
+    await mcpPage.waitForFunction(
+      (id) => !!window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).latestStats,
+      connectionIdA
+    );
+    const dump = await toolJson('wrtc_export_webrtc_internals_dump');
+    expect(typeof dump.UserAgent).toBe('string');
+    expect(Array.isArray(dump.getUserMedia)).toBe(true);
+    const pc = dump.PeerConnections[connectionIdA];
+    expect(pc).toBeDefined();
+    expect(typeof pc.url).toBe('string');
+    expect(Array.isArray(pc.updateLog)).toBe(true);
+    expect(pc.updateLog.some((e) => e.type === 'iceconnectionstatechange')).toBe(true);
+    const statsKey = Object.keys(pc.stats).find((k) => k.endsWith('-timestamp'));
+    expect(statsKey).toBeDefined();
+    expect(() => JSON.parse(pc.stats[statsKey].values)).not.toThrow();
   });
 });
