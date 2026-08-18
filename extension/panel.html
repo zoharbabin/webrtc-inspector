@@ -21,6 +21,10 @@
   input, textarea, button { background: #2d2d2d; color: #ddd; border: 1px solid #555; border-radius: 3px; padding: 3px 5px; }
   button { cursor: pointer; }
   button:hover { background: #3d3d3d; }
+  .copy-btn { font-size: 10px; padding: 0 4px; margin-left: 4px; }
+  .msg-row { padding: 1px 0; }
+  #eventlog { max-height: 150px; overflow-y: auto; border: 1px solid #333; padding: 2px 4px; }
+  .log-row { border-bottom: 1px solid #333; padding: 2px 0; font-size: 11px; }
   #controls { border-top: 1px solid #444; padding-top: 8px; margin-top: 8px; }
   .field { margin-bottom: 4px; }
   label { display: inline-block; width: 90px; font-size: 11px; color: #aaa; }
@@ -32,6 +36,9 @@
   <div id="connections"></div>
   <h2>WebSockets</h2>
   <div id="websockets"></div>
+
+  <h2>Recent events</h2>
+  <div id="eventlog"></div>
 
   <div id="controls">
     <h2>Inject audio into fake mic</h2>
@@ -99,6 +106,7 @@
   </div>
 
   <script src="panel-sparkline.js"></script>
+  <script src="panel-clipboard.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>
