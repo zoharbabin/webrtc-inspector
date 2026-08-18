@@ -20,6 +20,7 @@ module.exports = [
         MediaStreamTrack: 'readonly',
         MessageEvent: 'readonly',
         CloseEvent: 'readonly',
+        CustomEvent: 'readonly',
         Event: 'readonly',
         URL: 'readonly',
         WebSocket: 'readonly',

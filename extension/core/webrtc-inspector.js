@@ -1317,6 +1317,38 @@
     return { local: record.lastLocalSdp, remote: record.lastRemoteSdp };
   }
 
+  // #37 — matches any of the given MediaStreamTrack ids (e.g. from a
+  // <video>/<audio> element's srcObject.getTracks()) against tracks we're
+  // already tracking, for the "Test this stream" right-click overlay.
+  function getTrackDiagnostics(trackIds) {
+    const ids = Array.isArray(trackIds) ? trackIds : [];
+    // Two passes (remote across all connections, then local) rather than one
+    // pass per connection: a sender's track id and its receiver's track id
+    // can coincide (same-page loopback, or a track re-added after replaceTrack),
+    // and the overlay cares about the *receiving* side's freeze/quality data.
+    for (const record of connectionsById.values()) {
+      const remote = record.remoteTracks.find((t) => ids.includes(t.trackId));
+      if (remote) {
+        return {
+          connectionId: record.id, kind: remote.kind, status: remote.status,
+          freezeRatio: remote.freezeRatio, qualityFlag: remote.qualityFlag,
+          qualityScore: record.qualityScore,
+        };
+      }
+    }
+    for (const record of connectionsById.values()) {
+      const local = record.localTracks.find((t) => ids.includes(t.trackId));
+      if (local) {
+        return {
+          connectionId: record.id, kind: local.kind, status: local.status,
+          qualityLimitationReason: local.qualityLimitationReason,
+          qualityScore: record.qualityScore,
+        };
+      }
+    }
+    return null;
+  }
+
   // Pure rules engine: derives short machine-readable anomaly strings from
   // signals that already exist on the record (state timestamps, #15's
   // freezeRatio, #17's qualityLimitationReason, #16's candidateTypeFlips) —
@@ -1665,6 +1697,7 @@
     captureEvents,
     diffCaptures,
     getSdp,
+    getTrackDiagnostics,
     setFakeMic,
     clearFakeMic,
     injectAudio,
@@ -1699,4 +1732,15 @@
     onEvent: (cb) => { listeners.add(cb); return () => listeners.delete(cb); },
     clearLog: () => { log.length = 0; },
   };
+
+  // #37 — bridge for extension/overlay.js, which runs in the default
+  // ISOLATED world (needs chrome.runtime for the context-menu message) and
+  // so can't reach window.__webrtcInspector directly; the two worlds share
+  // the DOM, so a CustomEvent on `document` is the crossing point.
+  document.addEventListener('wrtc-overlay-request', (e) => {
+    const detail = e.detail || {};
+    document.dispatchEvent(new CustomEvent('wrtc-overlay-response', {
+      detail: { elId: detail.elId, diagnostics: getTrackDiagnostics(detail.trackIds) },
+    }));
+  });
 })();

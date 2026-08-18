@@ -33,6 +33,8 @@ The panel also has "Copy" buttons next to each connection's SDP, each data-chann
 
 The panel renders a per-connection/-WebSocket timeline of open/close/error lifecycle events (`extension/panel-timeline.js`), purely from the same event-log timestamps already polled via `getSnapshot()` — no new instrumentation.
 
+Right-click any `<video>`/`<audio>` element on the page → "Test this stream" overlays its live kind/status/quality metrics directly on the element (`extension/overlay.js`). The context-menu entry lives in a background service worker (`extension/background.js`, needs the `contextMenus` permission); `overlay.js` is a second, default-world content script (unlike `core/webrtc-inspector.js`'s `MAIN`-world script) since it needs `chrome.runtime` to receive the click — the two content scripts bridge via a `CustomEvent` on the shared `document` rather than a direct reference, since `MAIN`-world globals aren't visible from the default world.
+
 ## API — `window.__webrtcInspector`
 
 | Method | Does |
@@ -45,6 +47,7 @@ The panel renders a per-connection/-WebSocket timeline of open/close/error lifec
 | `onEvent(fn)` | Subscribe to the live event log. |
 | `clearLog()` | Drop accumulated log/stats history. |
 | `getSdp(connId)` | `{local, remote}` full SDP for a connection. |
+| `getTrackDiagnostics(trackIds)` | Matches a set of `MediaStreamTrack` ids (e.g. a `<video>`/`<audio>` element's `srcObject.getTracks()`) against tracked local/remote tracks — returns `{connectionId, kind, status, qualityScore, ...}` (remote matches add `freezeRatio`/`qualityFlag`; local matches add `qualityLimitationReason`) for the first match, `null` if none match. Powers the extension's "Test this stream" overlay. |
 | `getRemoteTrackStream(connId, trackId)` | Live `MediaStream` for one remote track — pipe into `<audio>`/`<video>`/`AnalyserNode`. |
 | `replaceOutgoingTrack(connId, kind, track)` | Swap a sender's outgoing track. |
 | `capEncoding(connId, kind, {maxBitrate, maxFramerate, scaleResolutionDownBy, degradationPreference})` | Force an active sender's encoding params via the standard `getParameters()`/mutate/`setParameters()` pattern — simulates a bandwidth-constrained encoder decision deterministically, without waiting for real congestion control to converge. Omit a field to leave it as-is. Real congestion control keeps running underneath, capped by whatever's set here. |

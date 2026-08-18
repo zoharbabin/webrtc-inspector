@@ -10,8 +10,15 @@
       "world": "MAIN",
       "run_at": "document_start",
       "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["overlay.js"],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
+  "background": { "service_worker": "background.js" },
   "devtools_page": "devtools.html",
-  "permissions": []
+  "permissions": ["contextMenus"]
 }
