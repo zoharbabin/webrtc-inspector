@@ -60,6 +60,15 @@ module.exports = [
     },
   },
   {
+    // metrics-exporter.js require()s panel-sparkline.js's pure logic when
+    // run in Node (tests); in a plain <script> browser context (no require),
+    // it falls back to that file's already-global export instead.
+    files: ['extension/metrics-exporter.js'],
+    languageOptions: {
+      globals: { require: 'readonly', fetch: 'readonly' },
+    },
+  },
+  {
     // Spec files mix Node (test/expect, require) and browser (page.evaluate
     // callback bodies) globals in the same file — ESLint can't tell which
     // scope a given `window` reference is in, so both are allowed here.

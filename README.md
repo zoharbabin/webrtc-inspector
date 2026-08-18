@@ -127,6 +127,24 @@ Both are approximations for a live diagnostic signal, not certified MOS/VMAF mea
 | `simulateNetworkLoss` | Does the client's heartbeat/backoff logic detect a control-plane outage and recover once it clears, without killing media? Pick `durationMs` well past any known heartbeat interval so the outage is unambiguous. |
 | `setMediaFaultInjector` | Does the client tolerate real packet loss/reorder/duplication on live RTP media (concealment, jitter buffer, PLI/NACK requests) without treating it as a connection failure? |
 
+### Metrics export (Prometheus / OpenTelemetry)
+
+`extension/metrics-exporter.js` is optional and not loaded by default — `chrome://webrtc-internals`-style in-page history is capped and non-persistent, so for longer-running sessions or CI-style regression tracking, load it alongside `core/webrtc-inspector.js` and `panel-sparkline.js` (it reuses that file's bitrate/RTT/jitter/loss derivation) and call:
+
+```js
+const { startMetricsExporter } = require('webrtc-inspector/extension/metrics-exporter.js'); // or a <script> global
+const handle = startMetricsExporter(window.__webrtcInspector, {
+  endpointUrl: 'http://localhost:9090/api/v1/otlp/v1/metrics',
+  format: 'otlp', // or 'prometheus' (default) for a Pushgateway-style text-exposition POST
+  intervalMs: 15000,
+  resourceAttributes: { 'service.name': 'my-app' },
+  onError: (err) => console.error('metrics push failed', err),
+});
+// later: handle.stop();
+```
+
+Pushes per-connection `qualityScore`, `bitrateKbps`, `rttMs`, `jitterMs`, `lossPct` as gauges — `connection_id` is the only label/attribute, keeping cardinality bounded. A failed push is routed to `onError`, not thrown — a transient collector outage doesn't kill tracking for the rest of the session.
+
 ## Known limitations
 
 - **`setMediaFaultInjector` is Chromium-only**: it uses `createEncodedStreams()`, a Chrome-specific `RTCRtpSender`/`Receiver` extension. The standards-track replacement, `RTCRtpScriptTransform`, requires a dedicated `Worker` and isn't implemented here yet — no-ops silently on Firefox/Safari and any Chromium build without support.
