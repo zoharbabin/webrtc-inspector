@@ -174,7 +174,7 @@
 
   function logLocalTrack(record, track) {
     const tag = trackTagById.get(track);
-    const trackRecord = { trackId: track.id, kind: track.kind, label: track.label, sourceTag: tag ? tag.tag : null, status: 'live', level: null };
+    const trackRecord = { trackId: track.id, kind: track.kind, label: track.label, sourceTag: tag ? tag.tag : null, status: 'live', level: null, qualityLimitationReason: null };
     record.localTracks.push(trackRecord);
     attachTrackLifecycle(record, trackRecord, track, 'local');
     emit({ type: 'track-added', connectionId: record.id, kind: track.kind, trackId: track.id, sourceTag: tag ? tag.tag : null });
@@ -424,11 +424,30 @@
         });
         record.statsHistory.push(summary);
         if (record.statsHistory.length > config.maxStatsHistory) record.statsHistory.shift();
+        updateLocalTrackQuality(record, summary.reports);
       } catch (_) { /* getStats can race a just-closed connection */ }
     }, config.statsIntervalMs);
   }
   function stopStatsPolling(record) {
     if (record.__statsTimer) clearInterval(record.__statsTimer);
+  }
+
+  // outbound-rtp reports carry no stable track-id field in modern Chromium, but
+  // each RTCRtpTransceiver's `mid` links its sender's track to the outbound-rtp
+  // report sharing that `mid` — that's the correlation this uses.
+  function updateLocalTrackQuality(record, reports) {
+    const outboundByMid = new Map();
+    reports.forEach((r) => { if (r.type === 'outbound-rtp' && r.mid != null) outboundByMid.set(r.mid, r); });
+    if (outboundByMid.size === 0) return;
+    const midByTrackId = new Map();
+    record.pc.getTransceivers().forEach((t) => {
+      if (t.sender && t.sender.track && t.mid != null) midByTrackId.set(t.sender.track.id, t.mid);
+    });
+    record.localTracks.forEach((trackRecord) => {
+      const mid = midByTrackId.get(trackRecord.trackId);
+      const report = mid != null ? outboundByMid.get(mid) : null;
+      trackRecord.qualityLimitationReason = (report && report.qualityLimitationReason) || null;
+    });
   }
 
   // ---- remote audio metering ("listen" tap) ------------------------------
