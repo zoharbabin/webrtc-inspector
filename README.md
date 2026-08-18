@@ -4,6 +4,22 @@
 
 Framework-agnostic WebRTC inspection and fault injection. Patches standard browser globals — works on any page, any SDK.
 
+## Quick start
+
+**Agent** (Claude Code, etc.) — MCP, zero manual setup:
+
+```sh
+claude mcp add webrtc-inspector -- npx -y --package=@zoharbabin/webrtc-inspector webrtc-inspector-mcp
+```
+
+Call `wrtc_status` first — it self-launches its own Chromium on first use if nothing's reachable, no human needs to start Chrome. The bundled [Claude Code Skill](.claude/skills/webrtc-inspector/SKILL.md) has runnable recipes (reconnect testing, quality regression triage, signaling-outage testing) on top of the tools below. Full details: [MCP server](#mcp-server).
+
+**Human** doing interactive debugging — the Chrome extension:
+
+Download the zip from the [latest release](https://github.com/zoharbabin/webrtc-inspector/releases/latest), unzip, then `chrome://extensions` → Developer mode → Load unpacked → that folder. DevTools → "WebRTC Inspector" panel.
+
+Need Playwright or a one-off console paste instead? See the full method comparison in [Usage](#usage).
+
 ## What it patches
 
 - `RTCPeerConnection` — tracks, transceivers, SDP, ICE, data channels
@@ -27,12 +43,14 @@ npm install @zoharbabin/webrtc-inspector
 
 ## Usage
 
+Full comparison — [Quick start](#quick-start) above covers the two most common paths (agent → MCP, human → extension); this is reference material for the rest.
+
 | Method | When | How |
 |---|---|---|
-| Chrome extension | Interactive inspection | Download the zip from the [latest release](https://github.com/zoharbabin/webrtc-inspector/releases/latest), unzip, then `chrome://extensions` → Developer mode → Load unpacked → that folder. (Or, from a clone: `extension/` / `node_modules/@zoharbabin/webrtc-inspector/extension/`.) DevTools → "WebRTC Inspector" panel. |
+| Chrome extension | Interactive inspection | See [Quick start](#quick-start). From a clone instead of the release zip: `extension/` or `node_modules/@zoharbabin/webrtc-inspector/extension/`. |
+| MCP server | MCP clients (Claude Code, etc.) | See [Quick start](#quick-start) and [MCP server](#mcp-server). |
 | Playwright | Scripted tests | `await page.addInitScript({ path: require.resolve('@zoharbabin/webrtc-inspector') })` before `page.goto(url)`. Runs on every navigation. |
 | DevTools console paste | One-off manual inspection | Paste `require.resolve('@zoharbabin/webrtc-inspector')`'s contents into the console before the connection is created. |
-| MCP server | MCP clients (Claude Code, etc.) | `webrtc-inspector-mcp` bin, or `mcp/server.js` in a clone. See [MCP server](#mcp-server). |
 
 MCP-style Playwright tools that only expose post-navigation `browser_evaluate` miss anything created before that call — use the extension instead.
 
