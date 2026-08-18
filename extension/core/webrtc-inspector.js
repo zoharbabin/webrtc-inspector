@@ -1065,14 +1065,17 @@
     const wantWs = opts.targets.includes('websocket');
     const wantDc = opts.targets.includes('datachannel');
     const wantHttp = opts.targets.includes('http');
+    const wantMedia = opts.targets.includes('media');
     const priorWsInterceptor = webSocketInterceptor;
     const priorDcInterceptor = dataChannelInterceptor;
     const priorHttpBlocked = httpBlocked;
+    const priorMediaFaultInjector = mediaFaultInjector;
     let stopped = false;
 
     if (wantWs) webSocketInterceptor = () => false;
     if (wantDc) dataChannelInterceptor = () => false;
     if (wantHttp) httpBlocked = true;
+    if (wantMedia) mediaFaultInjector = { connId: null, kind: null, fn: () => false };
     emit({ type: 'network-loss-start', durationMs, targets: opts.targets });
 
     let resolveDone;
@@ -1084,6 +1087,7 @@
       if (wantWs) webSocketInterceptor = priorWsInterceptor;
       if (wantDc) dataChannelInterceptor = priorDcInterceptor;
       if (wantHttp) httpBlocked = priorHttpBlocked;
+      if (wantMedia) mediaFaultInjector = priorMediaFaultInjector;
       clearTimeout(timer);
       emit({ type: 'network-loss-end', targets: opts.targets });
       resolveDone();
