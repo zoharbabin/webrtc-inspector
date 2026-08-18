@@ -20,7 +20,7 @@ Must run before the page's own scripts grab references to these globals.
 ## Install
 
 ```sh
-npm install webrtc-inspector
+npm install @zoharbabin/webrtc-inspector
 ```
 
 `main` resolves to `extension/core/webrtc-inspector.js`. Inside this repo, `core/webrtc-inspector.js` is a symlink to the same file, for repo-relative paths only.
@@ -29,9 +29,9 @@ npm install webrtc-inspector
 
 | Method | When | How |
 |---|---|---|
-| Chrome extension | Interactive inspection | `chrome://extensions` → Developer mode → Load unpacked → `extension/` (or `node_modules/webrtc-inspector/extension/`). DevTools → "WebRTC Inspector" panel. |
-| Playwright | Scripted tests | `await page.addInitScript({ path: require.resolve('webrtc-inspector') })` before `page.goto(url)`. Runs on every navigation. |
-| DevTools console paste | One-off manual inspection | Paste `require.resolve('webrtc-inspector')`'s contents into the console before the connection is created. |
+| Chrome extension | Interactive inspection | `chrome://extensions` → Developer mode → Load unpacked → `extension/` (or `node_modules/@zoharbabin/webrtc-inspector/extension/`). DevTools → "WebRTC Inspector" panel. |
+| Playwright | Scripted tests | `await page.addInitScript({ path: require.resolve('@zoharbabin/webrtc-inspector') })` before `page.goto(url)`. Runs on every navigation. |
+| DevTools console paste | One-off manual inspection | Paste `require.resolve('@zoharbabin/webrtc-inspector')`'s contents into the console before the connection is created. |
 | MCP server | MCP clients (Claude Code, etc.) | `webrtc-inspector-mcp` bin, or `mcp/server.js` in a clone. See [MCP server](#mcp-server). |
 
 MCP-style Playwright tools that only expose post-navigation `browser_evaluate` miss anything created before that call — use the extension instead.
@@ -106,7 +106,44 @@ WRTC_CDP_ENDPOINT=http://localhost:9222 node mcp/server.js   # defaults to that 
 node mcp/server.js
 ```
 
-Point an MCP client (e.g. Claude Code) at `mcp/server.js` as the command, with `WRTC_CDP_ENDPOINT` set if not using the default port.
+**Add it to an MCP client** — pick one:
+
+```sh
+# npm-installed
+claude mcp add webrtc-inspector -- npx -y --package=@zoharbabin/webrtc-inspector webrtc-inspector-mcp
+
+# repo clone
+claude mcp add webrtc-inspector -- node /absolute/path/to/webrtc-inspector/mcp/server.js
+```
+
+Or the equivalent `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "webrtc-inspector": {
+      "command": "npx",
+      "args": ["-y", "--package=@zoharbabin/webrtc-inspector", "webrtc-inspector-mcp"]
+    }
+  }
+}
+```
+
+`WRTC_CDP_ENDPOINT` is optional — only set it to attach to one specific already-running Chrome instead of letting the server self-launch its own:
+
+```json
+{
+  "mcpServers": {
+    "webrtc-inspector": {
+      "command": "npx",
+      "args": ["-y", "--package=@zoharbabin/webrtc-inspector", "webrtc-inspector-mcp"],
+      "env": { "WRTC_CDP_ENDPOINT": "http://localhost:9222" }
+    }
+  }
+}
+```
+
+First call after connecting: `wrtc_status` — confirms `mode` (`attached`/`self-launched`/`disconnected`) and whether a page is instrumented, before you rely on any other tool.
 
 Covers the pure-JSON surface: snapshots/diffs/bundles/captures, `getSdp`, `killConnection`, `restartIce`, `simulateNetworkLoss`, `capEncoding`, fake mic/cam, data-channel/WebSocket message injection, and `wrtc_navigate({url})` to point the current page at a target URL (creates and pre-instruments one if none exists yet). `simulateNetworkLoss` blocks until the outage finishes — no early `stop()` across the MCP boundary.
 
@@ -150,7 +187,7 @@ Approximate diagnostic signal, not a certified MOS/VMAF measurement.
 `extension/scenario-compiler.js` — optional, not loaded by default. Deterministic keyword/regex DSL (no LLM) compiling a scenario phrase into a sequence of the primitives above.
 
 ```js
-const { compileScenario, runCompiledScenario } = require('webrtc-inspector/extension/scenario-compiler.js');
+const { compileScenario, runCompiledScenario } = require('@zoharbabin/webrtc-inspector/extension/scenario-compiler.js');
 
 const compiled = compileScenario('drop packets for 3s then kill the connection', { connectionId: 1 });
 // compiled.steps -> [
@@ -170,7 +207,7 @@ Clauses split on `"then"`/`";"`. Priority: named preset (`"home wifi"`/`"4g trai
 `extension/signature-matcher.js` — optional, not loaded by default. Pattern-matches a captured event log against named signatures.
 
 ```js
-const { matchSignatures } = require('webrtc-inspector/extension/signature-matcher.js');
+const { matchSignatures } = require('@zoharbabin/webrtc-inspector/extension/signature-matcher.js');
 
 const capture = window.__webrtcInspector.captureEvents(); // or exportBundle()
 const findings = matchSignatures(capture);
@@ -190,7 +227,7 @@ const findings = matchSignatures(capture);
 `extension/metrics-exporter.js` — optional, not loaded by default.
 
 ```js
-const { startMetricsExporter } = require('webrtc-inspector/extension/metrics-exporter.js');
+const { startMetricsExporter } = require('@zoharbabin/webrtc-inspector/extension/metrics-exporter.js');
 const handle = startMetricsExporter(window.__webrtcInspector, {
   endpointUrl: 'http://localhost:9090/api/v1/otlp/v1/metrics',
   format: 'otlp', // or 'prometheus' (default)
