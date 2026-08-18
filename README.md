@@ -29,6 +29,8 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` c
 
 The DevTools panel renders a live bitrate/RTT/jitter/loss sparkline per connection, built client-side from each 1s `getSnapshot()` poll (`extension/panel-sparkline.js`) — not part of the `window.__webrtcInspector` API itself, since it's derived purely from data already exposed via `latestStats`.
 
+The panel also has "Copy" buttons next to each connection's SDP, each data-channel/WebSocket message, and each recent event-log entry — copies the underlying JSON straight to the clipboard for pasting into a bug report (`extension/panel-clipboard.js`).
+
 ## API — `window.__webrtcInspector`
 
 | Method | Does |
