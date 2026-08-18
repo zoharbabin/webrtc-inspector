@@ -1,5 +1,7 @@
 # webrtc-inspector
 
+[![CI](https://github.com/zoharbabin/webrtc-inspector/actions/workflows/ci.yml/badge.svg)](https://github.com/zoharbabin/webrtc-inspector/actions/workflows/ci.yml)
+
 Framework-agnostic WebRTC inspection and fault injection. Patches standard browser globals — works on any page, regardless of SDK or framework.
 
 ## What it patches
@@ -70,12 +72,17 @@ Tracked as issues: https://github.com/zoharbabin/webrtc-inspector/issues
 
 ## Testing
 
-`test/loopback-test.html` connects two `RTCPeerConnection`s directly in one page (no signaling server) and exercises every patched code path, writing PASS/FAIL to `window.__testResult`.
+Playwright suite under `test/specs/`, one file per feature area (peer connections, data channels, WebSockets, fake mic/cam, network-fault primitives). Every spec connects two `RTCPeerConnection`s directly in one page (no signaling server) via the shared helper in `test/fixtures/session-helpers.js`.
 
 ```sh
-python3 -m http.server 8931 --bind 127.0.0.1
-# open http://127.0.0.1:8931/test/loopback-test.html
+npm install
+npx playwright install --with-deps chromium   # once
+npm test                                      # headless run
+npm run test:ui                               # interactive UI mode
+npm run lint
 ```
+
+CI (`.github/workflows/ci.yml`) runs lint + the full suite on every push/PR, posts a pass/fail table to the job summary, and uploads the full HTML report (traces, screenshots on failure) as an artifact.
 
 ## License
 
