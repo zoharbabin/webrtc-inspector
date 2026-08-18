@@ -31,6 +31,10 @@
   }
 
   const config = { statsIntervalMs: 2000, maxLogEntries: 5000, maxStatsHistory: 60, levelIntervalMs: 250, maxDecodedPreviewChars: 500, maxHttpHistory: 200 };
+  // Thresholds for getSnapshot()'s heuristic anomaly flags (see #25) — each is
+  // "how long a suspicious-looking state has to persist before it's worth
+  // flagging", tuned low enough to keep loopback tests fast.
+  const ANOMALY_THRESHOLDS = { iceCheckingStuckMs: 5000, dataChannelUnusedMs: 3000, trackNoStatsMs: 3000, freezeRatioBad: 0.10, candidateFlipCount: 2 };
   const connectionsById = new Map(); // id -> record
   const recordByPc = new WeakMap(); // pc -> record
   const trackTagById = new WeakMap(); // MediaStreamTrack -> {tag, sourceCallId}
@@ -172,6 +176,7 @@
         iceConnectionState: pc.iceConnectionState,
         connectionState: pc.connectionState,
         signalingState: pc.signalingState,
+        iceConnectionStateSince: Date.now(),
       },
       localTracks: [],
       remoteTracks: [],
@@ -193,6 +198,7 @@
 
     pc.addEventListener('iceconnectionstatechange', () => {
       record.state.iceConnectionState = pc.iceConnectionState;
+      record.state.iceConnectionStateSince = Date.now();
       emit({ type: 'ice-state', connectionId: id, state: pc.iceConnectionState });
     });
     pc.addEventListener('connectionstatechange', () => {
@@ -220,7 +226,7 @@
       const tag = trackTagById.get(ev.track);
       const trackRecord = {
         trackId: ev.track.id, kind: ev.track.kind, label: ev.track.label, sourceTag: tag ? tag.tag : null, status: 'live', level: null,
-        freezeCount: null, totalFreezesDuration: null, freezeRatio: null, qualityFlag: null,
+        freezeCount: null, totalFreezesDuration: null, freezeRatio: null, qualityFlag: null, addedAt: Date.now(),
       };
       record.remoteTracks.push(trackRecord);
       freezeTrackingStartByTrackRecord.set(trackRecord, Date.now());
@@ -340,7 +346,7 @@
 
   function logLocalTrack(record, track) {
     const tag = trackTagById.get(track);
-    const trackRecord = { trackId: track.id, kind: track.kind, label: track.label, sourceTag: tag ? tag.tag : null, status: 'live', level: null, qualityLimitationReason: null };
+    const trackRecord = { trackId: track.id, kind: track.kind, label: track.label, sourceTag: tag ? tag.tag : null, status: 'live', level: null, qualityLimitationReason: null, addedAt: Date.now() };
     record.localTracks.push(trackRecord);
     attachTrackLifecycle(record, trackRecord, track, 'local');
     emit({ type: 'track-added', connectionId: record.id, kind: track.kind, trackId: track.id, sourceTag: tag ? tag.tag : null });
@@ -436,7 +442,7 @@
   // adds afterward, on the same event object.
 
   function instrumentDataChannel(record, channel, origin) {
-    const dcRecord = { label: channel.label, id: channel.id, origin, state: channel.readyState, messages: [] };
+    const dcRecord = { label: channel.label, id: channel.id, origin, state: channel.readyState, messages: [], createdAt: Date.now() };
     record.dataChannels.push(dcRecord);
     emit({ type: 'datachannel-opened', connectionId: record.id, label: channel.label, origin });
 
@@ -1152,14 +1158,58 @@
     return { local: record.lastLocalSdp, remote: record.lastRemoteSdp };
   }
 
+  // Pure rules engine: derives short machine-readable anomaly strings from
+  // signals that already exist on the record (state timestamps, #15's
+  // freezeRatio, #17's qualityLimitationReason, #16's candidateTypeFlips) —
+  // no new stats correlation, just naming states worth a human's attention.
+  function computeAnomalyFlags(record, now) {
+    const flags = [];
+    const t = ANOMALY_THRESHOLDS;
+
+    if (record.state.iceConnectionState === 'checking') {
+      const elapsed = now - record.state.iceConnectionStateSince;
+      if (elapsed > t.iceCheckingStuckMs) flags.push(`ice_stuck_checking_${elapsed}ms`);
+    }
+
+    record.dataChannels.forEach((d) => {
+      if (d.state === 'open' && d.messages.length === 0 && now - d.createdAt > t.dataChannelUnusedMs) {
+        flags.push(`datachannel_opened_never_used:${d.label}`);
+      }
+    });
+
+    record.localTracks.forEach((tr) => {
+      if (tr.status === 'live' && tr.qualityLimitationReason === null && now - tr.addedAt > t.trackNoStatsMs) {
+        flags.push(`track_added_no_stats:${tr.trackId}`);
+      } else if (tr.qualityLimitationReason && tr.qualityLimitationReason !== 'none') {
+        flags.push(`quality_limited_${tr.qualityLimitationReason}:${tr.trackId}`);
+      }
+    });
+
+    record.remoteTracks.forEach((tr) => {
+      if (tr.status === 'live' && tr.freezeCount === null && now - tr.addedAt > t.trackNoStatsMs) {
+        flags.push(`track_added_no_stats:${tr.trackId}`);
+      } else if (tr.freezeRatio !== null && tr.freezeRatio > t.freezeRatioBad) {
+        flags.push(`freeze_ratio_bad:${tr.trackId}`);
+      }
+    });
+
+    if (record.candidateTypeFlips.length >= t.candidateFlipCount) {
+      flags.push(`candidate_type_flipped_${record.candidateTypeFlips.length}x`);
+    }
+
+    return flags;
+  }
+
   function getSnapshot(opts) {
     const concise = !!opts && opts.detail === 'concise';
+    const now = Date.now();
     return {
       connections: Array.from(connectionsById.values()).map((r) => ({
         id: r.id,
         createdAt: r.createdAt,
         closed: r.closed,
         state: r.state,
+        flags: computeAnomalyFlags(r, now),
         localTracks: r.localTracks,
         remoteTracks: r.remoteTracks,
         dataChannels: r.dataChannels.map((d) => ({
@@ -1283,12 +1333,22 @@
     };
   }
 
+  function diffFlags(before, after) {
+    const beforeSet = new Set(before || []);
+    const afterSet = new Set(after || []);
+    const added = (after || []).filter((f) => !beforeSet.has(f));
+    const removed = (before || []).filter((f) => !afterSet.has(f));
+    return added.length || removed.length ? { added, removed } : null;
+  }
+
   function diffConnection(before, after) {
     const changes = {};
     ['iceConnectionState', 'connectionState', 'signalingState'].forEach((key) => {
       const c = fieldChange(before.state && before.state[key], after.state && after.state[key]);
       if (c) changes[key] = c;
     });
+    const flagsChange = diffFlags(before.flags, after.flags);
+    if (flagsChange) changes.flags = flagsChange;
     [
       ['closed', before.closed, after.closed],
       ['localTrackCount', before.localTracks.length, after.localTracks.length],
