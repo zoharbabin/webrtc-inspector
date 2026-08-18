@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>webrtc-inspector test fixture</title></head>
+<body>
+<script>
+// In-memory WebSocket stand-in, installed BEFORE webrtc-inspector.js loads so
+// the core module patches this instead of a real network socket. Lets specs
+// exercise the WebSocket code path with zero real sockets/network calls.
+class MockWebSocket extends EventTarget {
+  constructor(url, protocols) {
+    super();
+    this.url = url;
+    this.protocol = Array.isArray(protocols) ? (protocols[0] || '') : (protocols || '');
+    this.readyState = 0;
+    this.sent = [];
+    setTimeout(() => { this.readyState = 1; this.dispatchEvent(new Event('open')); }, 10);
+  }
+  send(data) { this.sent.push(data); }
+  close(code, reason) {
+    this.readyState = 3;
+    this.dispatchEvent(new CloseEvent('close', { code: code || 1000, reason: reason || '', wasClean: true }));
+  }
+}
+MockWebSocket.CONNECTING = 0; MockWebSocket.OPEN = 1; MockWebSocket.CLOSING = 2; MockWebSocket.CLOSED = 3;
+window.WebSocket = MockWebSocket;
+</script>
+<script src="/extension/core/webrtc-inspector.js"></script>
+<script src="/test/fixtures/session-helpers.js"></script>
+</body>
+</html>
