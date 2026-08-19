@@ -2,10 +2,11 @@ name: Publish to Chrome Web Store
 
 # Runs on the same v<version> tag push as .github/workflows/release.yml.
 # Inert until 5 repo secrets exist — CHROME_CLIENT_ID, CHROME_CLIENT_SECRET,
-# CHROME_REFRESH_TOKEN, CHROME_EXTENSION_ID, CHROME_PUBLISHER_ID (see issue #84
-# for how to get them: Google Cloud OAuth client + a one-time manual consent
-# flow, the extension ID assigned after the first manual dashboard
-# submission, and the publisher ID from the developer dashboard account).
+# CHROME_REFRESH_TOKEN, CHROME_EXTENSION_ID, CHROME_PUBLISHER_ID.
+# CLIENT_ID/CLIENT_SECRET/REFRESH_TOKEN: OAuth2 client credentials, see
+# https://github.com/fregante/chrome-webstore-upload-keys for the one-time
+# setup flow. EXTENSION_ID: from the dashboard listing URL. PUBLISHER_ID:
+# from the developer dashboard account settings.
 on:
   push:
     tags:
@@ -68,7 +69,7 @@ jobs:
           REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
         run: |
           ZIP="$(ls dist/*.zip)"
-          npx --yes chrome-webstore-upload-cli upload --source "$ZIP"
+          npx --yes chrome-webstore-upload-cli@4.0.1 upload --source "$ZIP"
 
       - name: Publish
         if: steps.creds.outputs.configured == 'true'
@@ -78,4 +79,4 @@ jobs:
           CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
-        run: npx --yes chrome-webstore-upload-cli publish
+        run: npx --yes chrome-webstore-upload-cli@4.0.1 publish
