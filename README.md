@@ -14,25 +14,51 @@ Use it as a Chrome extension, an MCP server for AI coding agents, an npm library
 
 ## Quick start
 
-**Agent** (Claude Code, etc.) — MCP, zero manual setup:
+Three pieces, install what you need:
 
-```sh
-claude mcp add webrtc-inspector -- npx -y --package=@zoharbabin/webrtc-inspector webrtc-inspector-mcp
-```
-
-Call `wrtc_status` first. If nothing's reachable yet, it self-launches its own Chromium — no human needs to start Chrome.
-
-The bundled [Claude Code Skill](.claude/skills/webrtc-inspector/SKILL.md) adds runnable recipes on top of the tools below: reconnect testing, quality regression triage, signaling-outage testing. Full details: [MCP server](#mcp-server).
-
-**Human** doing interactive debugging — the Chrome extension:
+**1. Chrome extension** — for a human watching DevTools.
 
 1. [Install from the Chrome Web Store](https://chromewebstore.google.com/detail/webrtc-inspector/mkfhlnakkjdmoofccmabhmnplmlglngb) — one click, no unzip needed.
 2. Open DevTools on any page with a WebRTC session.
 3. Click the "WebRTC Inspector" panel.
 
-Building the extension from source instead? Download the zip from the [latest release](https://github.com/zoharbabin/webrtc-inspector/releases/latest), unzip, then `chrome://extensions` → Developer mode → Load unpacked → that folder.
+Building from source instead? Download the zip from the [latest release](https://github.com/zoharbabin/webrtc-inspector/releases/latest), unzip, then `chrome://extensions` → Developer mode → Load unpacked → that folder.
+
+**2. MCP server** — for an AI agent (Claude Code, etc.), zero manual browser setup:
+
+```sh
+claude mcp add webrtc-inspector -- npx -y --package=@zoharbabin/webrtc-inspector webrtc-inspector-mcp
+```
+
+Call `wrtc_status` first. If nothing's reachable yet, it self-launches its own Chromium — no human needs to start Chrome. Full details: [MCP server](#mcp-server).
+
+**3. Claude Code Skill** — recipes on top of the MCP tools (reconnect testing, quality regression triage, signaling-outage testing). Already there if you're working in a clone of this repo. In an npm-installed project, copy it in once:
+
+```sh
+mkdir -p .claude/skills/webrtc-inspector
+cp node_modules/@zoharbabin/webrtc-inspector/.claude/skills/webrtc-inspector/SKILL.md .claude/skills/webrtc-inspector/
+```
 
 Need Playwright or a one-off console paste instead? See the full method comparison in [Usage](#usage).
+
+### Try it: have Claude QA a live WebRTC call, hands-off
+
+With the MCP server and Skill installed above, Claude can drive an end-to-end debugging session on its own — no human opening DevTools. It needs one more thing: a general-purpose browser-automation MCP (Playwright MCP, chrome-devtools-mcp, or similar) to click the page's own buttons. webrtc-inspector only inspects and fault-injects; it's not a page-automation tool.
+
+Point it at the public [pc1 sample](https://webrtc.github.io/samples/src/content/peerconnection/pc1/) and ask:
+
+> Open https://webrtc.github.io/samples/src/content/peerconnection/pc1/, click Start then Call, check the connection's quality, then kill it and tell me whether it recovers.
+
+What actually happens, no human involved:
+
+1. `wrtc_status` — confirms a browser is reachable (self-launches one if not).
+2. The browser-automation tool navigates to the page and clicks `#startButton`, then `#callButton` — the page's own two `RTCPeerConnection`s negotiate directly against each other, no signaling server involved.
+3. `wrtc_get_snapshot()` — both connections show `state: 'connected'`, tracks flowing, a `qualityScore`. Claude notes the `id` of one connection.
+4. `wrtc_kill_connection({ connId })` — a real `pc.close()`, simulating an abrupt network/tab death.
+5. `wrtc_get_snapshot()` again — that connection now shows `state: 'closed'`. This demo has no reconnect logic, so it stays closed. That's a real, reportable finding, not a tooling gap.
+6. Claude reports the result in plain language — what connected, what broke, what didn't recover.
+
+Swap step 4 for `wrtc_restart_ice` (renegotiate without tearing down) or `wrtc_simulate_network_loss` (drop packets without killing the connection) to probe different recovery paths on your own app.
 
 ## What it patches
 
