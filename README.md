@@ -3,6 +3,7 @@
 [![CI](https://github.com/zoharbabin/webrtc-inspector/actions/workflows/ci.yml/badge.svg)](https://github.com/zoharbabin/webrtc-inspector/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/%40zoharbabin%2Fwebrtc-inspector.svg)](https://www.npmjs.com/package/@zoharbabin/webrtc-inspector)
 [![Chrome Web Store](https://img.shields.io/chrome-web-store/v/mkfhlnakkjdmoofccmabhmnplmlglngb.svg)](https://chromewebstore.google.com/detail/webrtc-inspector/mkfhlnakkjdmoofccmabhmnplmlglngb)
+[![Get the extension](https://img.shields.io/badge/Chrome%20Web%20Store-Get%20the%20extension-4285F4?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/webrtc-inspector/mkfhlnakkjdmoofccmabhmnplmlglngb)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A WebRTC debugging and fault-injection tool for any page, any SDK, no app changes needed.
