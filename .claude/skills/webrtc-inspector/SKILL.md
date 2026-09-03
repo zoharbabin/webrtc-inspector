@@ -15,6 +15,14 @@ Call `wrtc_status` first, every session. It never throws. Read `mode`:
 
 Don't call `wrtc_get_snapshot` or any other tool before `wrtc_status` — it's the only tool guaranteed not to error, so it's the correct first probe every time.
 
+### Pairing with a browser-automation MCP (Playwright, chrome-devtools-mcp, etc.)
+
+webrtc-inspector has no click/type/navigate-a-UI tool — it's inspection and fault-injection only. Driving real page interaction (clicking through a consent flow, a "Start call" button, etc.) needs a separate browser-automation MCP alongside it. They're complementary: one drives the page, the other watches the WebRTC layer.
+
+**They must share one browser, not each launch their own.** Left alone, each MCP self-launches its own separate Chromium — the automation tool clicks around in one, while `wrtc_get_snapshot`/`wrtc_status` watch a different, unrelated browser that never saw the real session. If a snapshot looks empty or stale while you know a call is running, this is almost always why — check `wrtc_status`'s `mode` first. Fix: launch one Chrome with a fixed CDP port (e.g. `--remote-debugging-port=9222`), then attach both MCPs to it — `WRTC_CDP_ENDPOINT=http://localhost:9222` for webrtc-inspector, the equivalent `--cdp-endpoint`/attach flag for the other tool. Don't fall back to hand-rolling instrumentation via the automation tool's own JS-eval — that's a sign the two MCPs aren't pointed at the same browser yet, not a webrtc-inspector limitation.
+
+Any webrtc-inspector tool call — `wrtc_status` included, no need to call `wrtc_navigate` first — re-arms instrumentation for new pages on the shared browser. This only holds while webrtc-inspector's MCP server process stays connected: instrumentation isn't stored durably on the browser, it's re-applied by the connected client each time a new page opens. As long as both MCP servers run for the session's duration (the normal case), this just works.
+
 ## Recipes
 
 ### "Why did the call drop / how do I test reconnect"

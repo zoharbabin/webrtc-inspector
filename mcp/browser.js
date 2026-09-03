@@ -116,6 +116,12 @@ async function getPage(cdpEndpoint) {
   } catch {
     return ensureSelfLaunched();
   }
+  // addInitScript only re-applies while this process's CDP connection stays
+  // live (it's not stored durably on the browser) — re-arm it on every call
+  // so a dropped-and-reconnected connection doesn't silently stop
+  // instrumenting pages another MCP (e.g. Playwright) creates afterward.
+  const context = browser.contexts()[0];
+  if (context) await ensureInspectorInitScript(context);
   const page = await findInspectedPage(browser);
   if (!page) {
     throw new Error(
@@ -184,6 +190,8 @@ async function getStatus(cdpEndpoint) {
     } catch {
       return { cdpEndpoint, mode: 'disconnected', ...DISCONNECTED_STATUS_FIELDS };
     }
+    const context = browser.contexts()[0];
+    if (context) await ensureInspectorInitScript(context);
     const page = (await findInspectedPage(browser)) || (await firstAnyPage(browser));
     return { cdpEndpoint, mode: 'attached', ...(await inspectPage(page)) };
   } catch {

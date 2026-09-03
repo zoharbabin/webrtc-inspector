@@ -43,7 +43,9 @@ Need Playwright or a one-off console paste instead? See the full method comparis
 
 ### Try it: have Claude QA a live WebRTC call, hands-off
 
-With the MCP server and Skill installed above, Claude can drive an end-to-end debugging session on its own — no human opening DevTools. It needs one more thing: a general-purpose browser-automation MCP (Playwright MCP, chrome-devtools-mcp, or similar) to click the page's own buttons. webrtc-inspector only inspects and fault-injects; it's not a page-automation tool.
+With the MCP server and Skill installed above, Claude can drive an end-to-end debugging session on its own — no human opening DevTools. It needs one more thing: a general-purpose browser-automation MCP (Playwright MCP, chrome-devtools-mcp, or similar) to click the page's own buttons. webrtc-inspector only inspects and fault-injects; it's not a page-automation tool. The two are complementary, not substitutes — one drives the page, the other watches the WebRTC layer underneath it.
+
+**Point both MCPs at the same browser, or they'll watch nothing.** By default each self-launches its own separate Chromium — Playwright clicks around in one, while webrtc-inspector's snapshot/stats tools sit idle on a different, empty browser that never saw the real session. Give them one shared instance instead: launch Chrome yourself with `--remote-debugging-port=9222`, and set `WRTC_CDP_ENDPOINT=http://localhost:9222` for webrtc-inspector plus the matching `--cdp-endpoint`/attach flag for the other MCP. Same browser, same tab — one tool drives it, the other inspects it. Any webrtc-inspector tool call re-arms its instrumentation for new pages the other MCP opens, as long as webrtc-inspector's own MCP server stays connected for the session — which it does by default.
 
 Point it at the public [pc1 sample](https://webrtc.github.io/samples/src/content/peerconnection/pc1/) and ask:
 
