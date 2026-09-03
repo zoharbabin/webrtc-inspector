@@ -1,6 +1,6 @@
 {
   "name": "@zoharbabin/webrtc-inspector",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Framework-agnostic live WebRTC inspection and fault injection: peer connections, tracks, data channels, WebSockets, fake mic/camera, and real transport/signaling fault injection for reconnect testing.",
   "main": "extension/core/webrtc-inspector.js",
   "bin": {
