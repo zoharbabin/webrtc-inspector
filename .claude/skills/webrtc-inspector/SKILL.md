@@ -28,6 +28,8 @@ The automation MCP is wired one of two ways. Check which before picking a fix:
 
 **Mode 2 — extension relay, skip the `wrtc_*` tools and call the in-page API directly.** webrtc-inspector's MCP server has no CDP port to reach here — pointed at the default `localhost:9222` with nothing listening there, it silently self-launches its own disconnected Chromium, and `wrtc_*` tool calls inspect the wrong browser. This is a dead end no matter how the endpoint env var is tweaked. Instead, rely on the fact that the webrtc-inspector Chrome extension, if installed in that same real Chrome, auto-injects on every page and exposes `window.__webrtcInspector` (same methods the `wrtc_*` tools wrap: `getSnapshot`, `killConnection`, `restartIce`, `simulateNetworkLoss`, etc. — see `extension/core/webrtc-inspector.js`'s public API for the full list). Call it through the automation tool's own JS-eval (e.g. Playwright MCP's `browser_evaluate`) on the exact tab it's already driving. Requires the webrtc-inspector *extension* to be installed in the user's real Chrome — if it isn't, ask the user to install it (Chrome Web Store or an unpacked load of `extension/`) rather than trying to work around the gap.
 
+Each eval call is an isolated invocation — nothing local survives between calls. For a before/after workflow (e.g. `captureEvents()` then `diffCaptures(before, after)`), stash the intermediate result on a page global (`window.__before = window.__webrtcInspector.captureEvents();`) in one call and read it back in the next, rather than assuming a return value carries over.
+
 **Telling them apart without prior knowledge:** call `wrtc_status`. `mode: 'attached'` with a `pageUrl` that matches what the automation tool is doing confirms Mode 1 is wired correctly — proceed with `wrtc_*` tools. `mode: 'self-launched'` means the default CDP endpoint had nothing listening — that's the tell you're in Mode 2 (or nothing is configured at all): switch to calling `window.__webrtcInspector` via the automation tool's eval instead of retrying `wrtc_*` tools against a browser that will never see the real session.
 
 ## Recipes
@@ -46,7 +48,8 @@ The automation MCP is wired one of two ways. Check which before picking a fix:
 
 1. `wrtc_get_snapshot({detail: 'concise'})` — check every connection's `qualityScore` (1-5, `null` = no data yet) and `flags` (empty array = nothing flagged).
 2. A non-empty `flags` entry names the specific symptom (e.g. `ice_stuck_checking_<ms>ms`, `freeze_ratio_bad:<trackId>`) — see the README's `### flags` table for what each one means before guessing.
-3. Once you've reproduced the issue, `wrtc_export_bundle()` — attach its output verbatim to a bug report; it carries the full event log and stats history, not just the current snapshot.
+3. Also check each `remoteTracks[].qualityFlag` (`ok`/`degraded`/`bad`) directly — it fires at 1% freeze ratio, well before the connection-level `freeze_ratio_bad` flag (10%). A track can be `degraded` with `flags` still empty; don't rely on `flags` alone.
+4. Once you've reproduced the issue, `wrtc_export_bundle()` — attach its output verbatim to a bug report; it carries the full event log and stats history, not just the current snapshot.
 
 ### Signaling-outage / heartbeat testing
 

@@ -231,6 +231,10 @@ cp node_modules/@zoharbabin/webrtc-inspector/.claude/skills/webrtc-inspector/SKI
 
 Approximate diagnostic signal, not a certified MOS/VMAF measurement.
 
+### `qualityFlag` (per remote track)
+
+`getSnapshot().connections[].remoteTracks[].qualityFlag` — `'ok'`, `'degraded'`, or `'bad'`, based on that track's `freezeRatio`: `> 0.10` → `bad`, `> 0.01` → `degraded`, else `ok`. `null` until the track has a stats sample. More sensitive than the connection-level `freeze_ratio_bad` flag below (which only fires past 10%) — a track can show `degraded` while the connection's `flags` array stays empty. Check both when triaging quality, not just `flags`.
+
 ### `flags`
 
 `getSnapshot().connections[].flags` — short machine-readable strings, computed live. Empty when nothing looks wrong.
