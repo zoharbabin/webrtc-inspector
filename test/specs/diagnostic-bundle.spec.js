@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { gotoFixture } = require('../helpers');
+const pkg = require('../../package.json');
 
 test.describe('exportBundle()', () => {
   test.beforeEach(async ({ page }) => {
@@ -12,7 +13,7 @@ test.describe('exportBundle()', () => {
       return JSON.parse(JSON.stringify(window.__webrtcInspector.exportBundle()));
     });
     expect(typeof bundle.exportedAt).toBe('number');
-    expect(bundle.version).toBe('1.4.0');
+    expect(bundle.version).toBe(pkg.version);
     expect(Array.isArray(bundle.snapshot.connections)).toBe(true);
     expect(bundle.snapshot.connections.length).toBe(2);
     expect(Array.isArray(bundle.fullLog)).toBe(true);

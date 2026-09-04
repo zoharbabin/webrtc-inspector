@@ -1462,7 +1462,7 @@
   function exportBundle() {
     return {
       exportedAt: Date.now(),
-      version: '1.4.0',
+      version: '1.4.1',
       snapshot: getSnapshot({ detail: 'detailed' }),
       fullLog: log.slice(),
       statsHistory: Array.from(connectionsById.values()).map((r) => ({
@@ -1730,7 +1730,7 @@
   }
 
   window.__webrtcInspector = {
-    version: '1.4.0',
+    version: '1.4.1',
     getSnapshot,
     getSnapshotDiff,
     exportBundle,
