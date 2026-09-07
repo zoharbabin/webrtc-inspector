@@ -2,6 +2,7 @@
 const { defineConfig, devices } = require('@playwright/test');
 
 const isCI = !!process.env.CI;
+const MEDIA_SPECS = ['**/media-fault-injection.spec.js', '**/network-fault.spec.js'];
 
 module.exports = defineConfig({
   testDir: 'test/specs',
@@ -38,6 +39,31 @@ module.exports = defineConfig({
             '--use-fake-device-for-media-stream',
           ],
         },
+      },
+    },
+    // The media-path specs also run on Firefox and WebKit: setMediaFaultInjector
+    // uses the standard RTCRtpScriptTransform and simulateNetworkLoss's 'media'
+    // target uses replaceTrack(null), so both must hold on every engine. The rest
+    // of the suite (extension, MCP over CDP) is Chromium by nature.
+    {
+      name: 'firefox',
+      testMatch: MEDIA_SPECS,
+      use: {
+        ...devices['Desktop Firefox'],
+        launchOptions: {
+          firefoxUserPrefs: {
+            'media.navigator.streams.fake': true,
+            'media.navigator.permission.disabled': true,
+          },
+        },
+      },
+    },
+    {
+      name: 'webkit',
+      testMatch: MEDIA_SPECS,
+      use: {
+        ...devices['Desktop Safari'],
+        permissions: ['camera', 'microphone'],
       },
     },
   ],

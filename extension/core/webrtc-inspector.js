@@ -52,8 +52,9 @@
   const decoders = []; // {id, matcher, decodeFn}, registration order = match priority
   let nextDecoderId = 1;
   let suggestDecoder = null; // (payload, meta) => any | Promise<any> — single active advisory hook, mirrors ws/dc interceptors
-  let mediaFaultInjector = null; // {connId, kind, fn} | null — single active injector, mirrors ws/dc interceptors
-  const transformedRtpEndpoints = new WeakSet(); // RTCRtpSender|RTCRtpReceiver already piped through our transform
+  let mediaFaultInjector = null; // {connId, kind, fnSource} | null — single active injector, mirrors ws/dc interceptors
+  let mediaFaultWorker = null; // lazily created Worker that runs every RTCRtpScriptTransform we attach
+  const mediaTransformEndpoints = new WeakSet(); // RTCRtpSender|RTCRtpReceiver that already carry our transform
   let labeler = null; // (meta) => string|null — single active hook, mirrors ws/dc interceptors
   const iceCandidateFilters = new Map(); // connectionId -> predicateFn(candidateType, candidateStr) => boolean, false drops
 
@@ -256,19 +257,23 @@
   // ---- RTCPeerConnection ----------------------------------------------------
 
   function PatchedRTCPeerConnection(configuration, constraints) {
-    // encodedInsertableStreams is a Chrome-specific RTCConfiguration extension
-    // that unlocks RTCRtpSender/Receiver.createEncodedStreams() below — always
-    // set, harmless no-op on engines that don't recognize it.
-    const encodedStreamsConfig = Object.assign({}, configuration, { encodedInsertableStreams: true });
+    // The configuration is passed through untouched: the inspector never forces
+    // encodedInsertableStreams or any other media-path option, so by default
+    // it measures exactly what the app would do on its own.
     const pc = constraints !== undefined
-      ? new OriginalRTCPeerConnection(encodedStreamsConfig, constraints)
-      : new OriginalRTCPeerConnection(encodedStreamsConfig);
+      ? new OriginalRTCPeerConnection(configuration, constraints)
+      : new OriginalRTCPeerConnection(configuration);
 
     const id = nextConnectionId++;
     const record = {
       id,
       createdAt: Date.now(),
       configuration: configuration || null,
+      // Decided once, here: encoded-frame transforms can only be attached to
+      // senders before setLocalDescription and to receivers inside the 'track'
+      // event on Chromium, so coverage is fixed at creation time. Never covered
+      // when the app asked for legacy insertable streams itself.
+      mediaFaultInjectable: !!mediaFaultInjector && supportsMediaTransform() && !(configuration && configuration.encodedInsertableStreams),
       closed: false,
       state: {
         iceConnectionState: pc.iceConnectionState,
@@ -336,7 +341,7 @@
       attachTrackLifecycle(record, trackRecord, ev.track, 'remote');
       if (ev.track.kind === 'audio') meterRemoteAudioTrack(trackRecord, ev.track);
       emit({ type: 'track-received', connectionId: id, kind: ev.track.kind, trackId: ev.track.id, sourceTag: tag ? tag.tag : null });
-      installEncodedTransform(record, ev.receiver, 'incoming', ev.track.kind);
+      installMediaTransform(record, ev.receiver, 'incoming', ev.track.kind); // must stay synchronous inside this handler (Chromium)
     });
     pc.addEventListener('datachannel', (ev) => {
       instrumentDataChannel(record, ev.channel, 'remote');
@@ -356,80 +361,215 @@
     track.addEventListener('unmute', () => { trackRecord.status = 'live'; emit({ type: 'track-unmuted', connectionId: record.id, trackId: track.id, origin }); });
   }
 
-  // ---- Insertable Streams: encoded media-frame fault injection --------------
+  // ---- WebRTC Encoded Transform: encoded media-frame fault injection --------
   //
-  // Chromium-only: createEncodedStreams() is a Chrome RTCRtpSender/Receiver
-  // extension, not yet the standardized RTCRtpScriptTransform. No-ops on other
-  // engines. setMediaFaultInjector's fn receives the live encoded frame — its
-  // writable .data lets a caller corrupt/rewrite in place with no special
-  // return value; 'duplicate'/{delayMs}/false are for actions the platform
-  // has no direct API for.
+  // Uses the standard RTCRtpScriptTransform (Chromium, Firefox, WebKit), not
+  // Chromium's legacy createEncodedStreams(). Transforms run in a Worker, so
+  // the injector fn is shipped as source text and must be self-contained: no
+  // closures over page state. fn(direction, frame, meta, report) receives the
+  // live encoded frame — its writable .data lets it corrupt in place with no
+  // special return value; 'duplicate'/{delayMs}/false cover actions the
+  // platform has no direct API for. report(payload) posts a cloneable payload
+  // back to the page as a 'media-fault-report' event.
+  //
+  // Nothing is attached unless an injector is armed when the connection is
+  // created (record.mediaFaultInjectable). Chromium only accepts a sender
+  // transform before setLocalDescription and a receiver transform inside the
+  // 'track' event; a later attach silently does nothing, and setting
+  // .transform = null on a live endpoint stalls media (Chromium schedules its
+  // native pass-through only once, at sender construction, so a detached
+  // endpoint has no consumer left). So coverage is decided at creation and
+  // never detached: clearMediaFaultInjector() switches the worker to
+  // pass-through instead. An endpoint that already carries an app transform
+  // is left alone; legacy createEncodedStreams() and .transform feed the same
+  // frame slot in Chromium and the later one silently starves the earlier,
+  // so encodedInsertableStreams connections are never covered either.
 
-  function injectorMatches(injector, connId, kind) {
-    if (injector.connId != null && injector.connId !== connId) return false;
-    if (injector.kind != null && injector.kind !== kind) return false;
-    return true;
+  const MEDIA_FAULT_WORKER_SOURCE = `'use strict';
+let injector = null; // {connId, kind, fn}
+let outage = false;  // simulateNetworkLoss({targets:['media']}) drops every frame on covered endpoints
+
+function compile(src) {
+  try {
+    return new Function('return (' + src + ')')();
+  } catch (err) {
+    if (err instanceof SyntaxError) throw err;
+    // CSP blocked eval in this worker: load the source as a script instead.
+    const url = URL.createObjectURL(new Blob(['self.__mediaFaultFn = (' + src + ');'], { type: 'text/javascript' }));
+    try { importScripts(url); } finally { URL.revokeObjectURL(url); }
+    const fn = self.__mediaFaultFn;
+    delete self.__mediaFaultFn;
+    return fn;
   }
+}
 
-  function cloneEncodedFrame(frame) {
+self.onmessage = (e) => {
+  const msg = e.data || {};
+  if (msg.type === 'set') {
     try {
-      return new frame.constructor(frame, { data: frame.data.slice(0) });
-    } catch (_) {
-      return frame; // constructor form unsupported on this engine — best effort
+      injector = { connId: msg.connId, kind: msg.kind, fn: compile(msg.fnSource) };
+    } catch (err) {
+      injector = null;
+      self.postMessage({ type: 'injector-error', stage: 'compile', message: String((err && err.message) || err) });
     }
+  } else if (msg.type === 'clear') {
+    injector = null;
+  } else if (msg.type === 'outage') {
+    outage = !!msg.active;
+  }
+};
+
+function matches(inj, meta) {
+  return (inj.connId == null || inj.connId === meta.connId) && (inj.kind == null || inj.kind === meta.kind);
+}
+
+function cloneFrame(frame) {
+  try { return new frame.constructor(frame, { metadata: frame.getMetadata() }); } catch (_) { return null; }
+}
+
+self.onrtctransform = (ev) => {
+  const meta = ev.transformer.options || {};
+  const report = (payload) => self.postMessage({ type: 'report', meta, payload });
+  let reportedError = false;
+  const ts = new TransformStream({
+    transform(frame, controller) {
+      if (outage) return;
+      const inj = injector;
+      if (!inj || !matches(inj, meta)) { controller.enqueue(frame); return; }
+      let action;
+      try {
+        action = inj.fn(meta.direction, frame, meta, report);
+      } catch (err) {
+        action = undefined; // a throwing injector passes the frame through
+        if (!reportedError) {
+          reportedError = true;
+          self.postMessage({ type: 'injector-error', stage: 'run', meta, message: String((err && err.message) || err) });
+        }
+      }
+      if (action === false) return; // drop
+      if (action === 'duplicate') {
+        controller.enqueue(frame);
+        const copy = cloneFrame(frame);
+        if (copy) controller.enqueue(copy);
+        return;
+      }
+      if (action && typeof action.delayMs === 'number') {
+        setTimeout(() => { try { controller.enqueue(frame); } catch (_) { /* stream closed before the delay elapsed */ } }, action.delayMs);
+        return;
+      }
+      controller.enqueue(frame);
+    },
+  });
+  ev.transformer.readable.pipeThrough(ts).pipeTo(ev.transformer.writable).catch(() => {
+    /* rejects on pc close/track end — expected, not an error */
+  });
+};
+`;
+
+  function supportsMediaTransform() {
+    return typeof window.RTCRtpScriptTransform === 'function' && typeof window.Worker === 'function';
   }
 
-  function installEncodedTransform(record, endpoint, direction, kind) {
-    if (!endpoint || typeof endpoint.createEncodedStreams !== 'function') return; // unsupported browser
-    if (transformedRtpEndpoints.has(endpoint)) return;
-    transformedRtpEndpoints.add(endpoint);
-
-    let streams;
+  function getMediaFaultWorker() {
+    if (mediaFaultWorker) return mediaFaultWorker;
+    let worker;
     try {
-      streams = endpoint.createEncodedStreams();
-    } catch (_) {
+      worker = new Worker(URL.createObjectURL(new Blob([MEDIA_FAULT_WORKER_SOURCE], { type: 'text/javascript' })));
+    } catch (err) {
+      throw new Error(`setMediaFaultInjector: could not start the transform worker (${err && err.message}). The page's Content-Security-Policy must allow blob: workers (worker-src/script-src).`);
+    }
+    worker.onmessage = (e) => {
+      const msg = e.data || {};
+      const meta = msg.meta || {};
+      if (msg.type === 'report') {
+        emit({ type: 'media-fault-report', connectionId: meta.connId, kind: meta.kind, direction: meta.direction, trackId: meta.trackId, payload: msg.payload });
+      } else if (msg.type === 'injector-error') {
+        emit({ type: 'media-fault-injector-error', stage: msg.stage, connectionId: meta.connId, kind: meta.kind, direction: meta.direction, message: msg.message });
+      }
+    };
+    worker.onerror = (e) => {
+      emit({ type: 'media-fault-injector-error', stage: 'worker', message: (e && e.message) || 'worker error (blocked by Content-Security-Policy?)' });
+    };
+    mediaFaultWorker = worker;
+    return worker;
+  }
+
+  function installMediaTransform(record, endpoint, direction, kind) {
+    if (!record.mediaFaultInjectable || !endpoint || mediaTransformEndpoints.has(endpoint)) return;
+    if (endpoint.transform) {
+      emit({ type: 'media-transform-failed', connectionId: record.id, kind, direction, error: 'app transform already set' });
       return;
     }
-
-    const transform = new TransformStream({
-      transform(frame, controller) {
-        const injector = mediaFaultInjector;
-        if (!injector || !injectorMatches(injector, record.id, kind)) {
-          controller.enqueue(frame);
-          return;
-        }
-        let action;
-        try {
-          action = injector.fn(direction, frame, { connId: record.id, kind, trackId: endpoint.track ? endpoint.track.id : null });
-        } catch (_) {
-          action = undefined; // a throwing injector just passes the frame through
-        }
-        if (action === false) return; // drop
-        if (action === 'duplicate') {
-          controller.enqueue(frame);
-          controller.enqueue(cloneEncodedFrame(frame));
-          return;
-        }
-        if (action && typeof action.delayMs === 'number') {
-          setTimeout(() => {
-            try { controller.enqueue(frame); } catch (_) { /* stream closed before the delay elapsed */ }
-          }, action.delayMs);
-          return;
-        }
-        controller.enqueue(frame);
-      },
-    });
-
-    streams.readable.pipeThrough(transform).pipeTo(streams.writable).catch(() => {
-      /* rejects on pc close/track end — expected, not an error */
-    });
+    let worker;
+    try { worker = getMediaFaultWorker(); } catch (err) {
+      emit({ type: 'media-transform-failed', connectionId: record.id, kind, direction, error: err.message });
+      return;
+    }
+    const meta = { connId: record.id, kind, direction, trackId: endpoint.track ? endpoint.track.id : null };
+    try {
+      endpoint.transform = new window.RTCRtpScriptTransform(worker, meta);
+      mediaTransformEndpoints.add(endpoint);
+      emit({ type: 'media-transform-installed', connectionId: record.id, kind, direction });
+    } catch (err) {
+      emit({ type: 'media-transform-failed', connectionId: record.id, kind, direction, error: String((err && err.message) || err) });
+    }
   }
 
   function setMediaFaultInjector(connId, kind, fn) {
-    mediaFaultInjector = { connId: connId != null ? connId : null, kind: kind != null ? kind : null, fn };
+    if (typeof fn !== 'function') throw new TypeError('setMediaFaultInjector: fn must be a function');
+    if (!supportsMediaTransform()) throw new Error('setMediaFaultInjector: RTCRtpScriptTransform is not available in this browser');
+    const fnSource = String(fn);
+    try {
+      new Function(`return (${fnSource})`); // surface a non-expression source (bound/native/method shorthand) right here
+    } catch (err) {
+      if (err instanceof SyntaxError) throw new Error(`setMediaFaultInjector: fn must be a self-contained function expression (${err.message})`);
+      // any other error means the page CSP blocks eval; the worker compiles it instead
+    }
+    const worker = getMediaFaultWorker();
+    mediaFaultInjector = { connId: connId != null ? connId : null, kind: kind != null ? kind : null, fnSource };
+    worker.postMessage({ type: 'set', connId: mediaFaultInjector.connId, kind: mediaFaultInjector.kind, fnSource });
+    const uncovered = Array.from(connectionsById.values()).filter((r) => !r.closed && !r.mediaFaultInjectable).map((r) => r.id);
+    if (uncovered.length) emit({ type: 'media-fault-injector-uncovered', connectionIds: uncovered });
   }
   function clearMediaFaultInjector() {
     mediaFaultInjector = null;
+    if (mediaFaultWorker) mediaFaultWorker.postMessage({ type: 'clear' });
+  }
+
+  // Transform-free outgoing media blackout for simulateNetworkLoss: every live
+  // sender gets replaceTrack(null), which stops RTP on all engines mid-call
+  // with no renegotiation, then gets its track back on restore. Endpoints that
+  // do carry our transform additionally drop both directions via the worker.
+  function startMediaBlackout() {
+    const blackedOut = [];
+    if (OriginalRTCRtpSenderReplaceTrack) {
+      connectionsById.forEach((record) => {
+        if (record.closed) return;
+        let senders = [];
+        try { senders = record.pc.getSenders(); } catch (_) { return; }
+        senders.forEach((sender) => {
+          const track = sender.track;
+          if (!track) return;
+          try {
+            const settled = OriginalRTCRtpSenderReplaceTrack.call(sender, null).catch(() => {});
+            blackedOut.push({ record, sender, track, settled });
+          } catch (_) { /* sender already closed */ }
+        });
+      });
+    }
+    if (mediaFaultWorker) mediaFaultWorker.postMessage({ type: 'outage', active: true });
+    return {
+      restore() {
+        if (mediaFaultWorker) mediaFaultWorker.postMessage({ type: 'outage', active: false });
+        blackedOut.forEach(({ record, sender, track, settled }) => {
+          settled.then(() => {
+            // Only put back what we removed: skip if the app replaced/removed the track meanwhile.
+            if (record.closed || sender.track !== null || track.readyState !== 'live') return;
+            return OriginalRTCRtpSenderReplaceTrack.call(sender, track);
+          }).catch(() => {});
+        });
+      },
+    };
   }
 
   // MediaStreamTrack's spec-defined 'ended' EVENT does not fire for an explicit
@@ -461,7 +601,7 @@
     const record = recordByPc.get(this);
     if (record) {
       logLocalTrack(record, track);
-      installEncodedTransform(record, result, 'outgoing', track.kind);
+      installMediaTransform(record, result, 'outgoing', track.kind);
     }
     return result;
   };
@@ -475,7 +615,7 @@
         const kind = typeof trackOrKind === 'string' ? trackOrKind : trackOrKind.kind;
         emit({ type: 'transceiver-added', connectionId: record.id, kind, direction: init && init.direction });
         if (trackOrKind && typeof trackOrKind !== 'string') logLocalTrack(record, trackOrKind);
-        installEncodedTransform(record, result.sender, 'outgoing', kind);
+        installMediaTransform(record, result.sender, 'outgoing', kind);
       }
       return result;
     };
@@ -1192,13 +1332,12 @@
     const priorWsInterceptor = webSocketInterceptor;
     const priorDcInterceptor = dataChannelInterceptor;
     const priorHttpBlocked = httpBlocked;
-    const priorMediaFaultInjector = mediaFaultInjector;
     let stopped = false;
 
     if (wantWs) webSocketInterceptor = () => false;
     if (wantDc) dataChannelInterceptor = () => false;
     if (wantHttp) httpBlocked = true;
-    if (wantMedia) mediaFaultInjector = { connId: null, kind: null, fn: () => false };
+    const mediaBlackout = wantMedia ? startMediaBlackout() : null;
     emit({ type: 'network-loss-start', durationMs, targets: opts.targets });
 
     let resolveDone;
@@ -1210,7 +1349,7 @@
       if (wantWs) webSocketInterceptor = priorWsInterceptor;
       if (wantDc) dataChannelInterceptor = priorDcInterceptor;
       if (wantHttp) httpBlocked = priorHttpBlocked;
-      if (wantMedia) mediaFaultInjector = priorMediaFaultInjector;
+      if (mediaBlackout) mediaBlackout.restore();
       clearTimeout(timer);
       emit({ type: 'network-loss-end', targets: opts.targets });
       resolveDone();
@@ -1403,6 +1542,7 @@
         createdAt: r.createdAt,
         closed: r.closed,
         state: r.state,
+        mediaFaultInjectable: r.mediaFaultInjectable,
         flags: computeAnomalyFlags(r, now),
         label: computeLabel({ kind: 'connection', connectionId: r.id, urls: flattenIceServerUrls(r.configuration) }),
         localTracks: r.localTracks,
@@ -1462,7 +1602,7 @@
   function exportBundle() {
     return {
       exportedAt: Date.now(),
-      version: '1.4.1',
+      version: '1.5.0',
       snapshot: getSnapshot({ detail: 'detailed' }),
       fullLog: log.slice(),
       statsHistory: Array.from(connectionsById.values()).map((r) => ({
@@ -1730,7 +1870,7 @@
   }
 
   window.__webrtcInspector = {
-    version: '1.4.1',
+    version: '1.5.0',
     getSnapshot,
     getSnapshotDiff,
     exportBundle,

@@ -55,7 +55,7 @@ Each eval call is an isolated invocation — nothing local survives between call
 
 1. Know your app's heartbeat/reconnect interval before picking a duration — the outage needs to outlast it to actually trigger reconnect logic.
 2. Named, realistic scenario: `wrtc_simulate_network_preset({name})` — `'home-wifi'`, `'4g-train'`, `'congested-mobile'`, or one already registered via `wrtc_register_network_preset`.
-3. Custom outage: `wrtc_simulate_network_loss({durationMs, targets})`. `targets` defaults to `['websocket', 'datachannel']`; add `'http'` for WHIP/WHEP/SDP-over-HTTP signaling, `'media'` for real dropped encoded frames (Chromium only).
+3. Custom outage: `wrtc_simulate_network_loss({durationMs, targets})`. `targets` defaults to `['websocket', 'datachannel']`; add `'http'` for WHIP/WHEP/SDP-over-HTTP signaling, `'media'` to black out every outgoing track for the duration (`replaceTrack(null)`, then restored; works mid-call on all engines).
 4. Both tools block until the outage finishes and auto-restore — there's no early-stop handle over MCP, so pick a duration you actually want to wait out.
 
 ## Optional modules — when to reach past the primitives above

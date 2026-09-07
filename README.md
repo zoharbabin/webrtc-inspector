@@ -67,13 +67,14 @@ Swap step 4 for `wrtc_restart_ice` (renegotiate without tearing down) or `wrtc_s
 - `RTCPeerConnection` — tracks, transceivers, SDP, ICE, data channels
 - `RTCDataChannel.send`
 - `RTCRtpSender.replaceTrack`
-- `RTCRtpSender`/`Receiver.createEncodedStreams()`
 - `MediaStreamTrack.stop` — patched directly. The spec doesn't fire `'ended'` for a self-initiated `stop()`.
 - `WebSocket`
 - `fetch` / `XMLHttpRequest` — covers HTTP-based signaling (WHIP/WHEP, SDP-over-HTTP). Previews land in `getSnapshot().httpRequests`. Faultable via `simulateNetworkLoss({targets: ['http']})`.
 - `getUserMedia` / `getDisplayMedia`
 
 It must run before the page's own scripts grab references to these globals — that's why it's a `document_start` patch, not a regular script.
+
+The media path is not touched by default. `RTCConfiguration` is passed through unchanged, no encoded transform is attached, and no worker is started. So stats you read through the inspector are the stats the app would have without it, and the app is free to use `encodedInsertableStreams`/`createEncodedStreams()` or its own `sender.transform`. Only `setMediaFaultInjector` opts a connection into a transform, and only for connections created while it is armed (see [Media fault injection](#media-fault-injection)).
 
 ## Install
 
@@ -142,11 +143,22 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` m
 | `sendOnWebSocket(socketId, data)` | Real `send()` on a tracked socket. |
 | `killConnection(connId)` | Real `pc.close()` — abrupt transport death. |
 | `restartIce(connId)` | Real `pc.restartIce()` — renegotiate in place, no teardown. |
-| `simulateNetworkLoss(durationMs, {targets})` | Drops sends on `websocket`/`datachannel` (default both) for `durationMs`, then restores. `'http'` also fails every `fetch`/XHR. `'media'` drops real encoded frames (Chromium only). Returns `{stop, done}`. |
+| `simulateNetworkLoss(durationMs, {targets})` | Drops sends on `websocket`/`datachannel` (default both) for `durationMs`, then restores. `'http'` also fails every `fetch`/XHR. `'media'` blacks out every live sender with `replaceTrack(null)` and gives the track back on restore: works mid-call on any connection, all engines, no renegotiation. Firefox still sends about one RTP packet per second on a track-less sender; Chromium and WebKit send none. Returns `{stop, done}`. |
 | `simulateNetworkPreset(name)` / `registerNetworkPreset(name, config)` | Named scenarios on `simulateNetworkLoss`. Ships `'home-wifi'`, `'4g-train'`, `'congested-mobile'`. `config = {durationMs, targets, pattern:'full'\|'flapping', flapIntervalMs?}`. Returns `{stop, done}`. |
-| `setMediaFaultInjector(connId, kind, fn)` / `clearMediaFaultInjector()` | Per-frame fault injection via Insertable Streams. `kind: 'audio'\|'video'`, `null` matches all. `fn(direction, frame, meta)`, `direction: 'outgoing'\|'incoming'`. Mutate `frame.data` to corrupt; return `false` to drop, `'duplicate'` to duplicate, `{delayMs}` to delay/reorder. One injector at a time. Chromium only. |
+| `setMediaFaultInjector(connId, kind, fn)` / `clearMediaFaultInjector()` | Per-frame fault injection through the standard WebRTC Encoded Transform (`RTCRtpScriptTransform`). `kind: 'audio'\|'video'`, `null` matches all. `fn(direction, frame, meta, report)` runs in a worker. Mutate `frame.data` to corrupt; return `false` to drop, `'duplicate'` to duplicate, `{delayMs}` to delay/reorder. One injector at a time. Details below. |
 
 Every track from patched `getUserMedia`/`getDisplayMedia` is tagged (`fake-mic`/`real-device`/`display-capture`/`fake-cam`), visible in `getSnapshot()`.
+
+#### Media fault injection
+
+`setMediaFaultInjector` uses `RTCRtpScriptTransform` (Chrome 141+, Firefox 117+, Safari 15.4+), not Chromium's legacy `createEncodedStreams()`. On an older browser it throws on arm. Rules that follow from how browsers implement it:
+
+- **Arm it before the connection is created.** Chromium only accepts a sender transform before `setLocalDescription` and a receiver transform inside the `track` event, and clearing a live transform stalls media. So coverage is decided when a `RTCPeerConnection` is constructed and never removed. `getSnapshot().connections[i].mediaFaultInjectable` tells you which connections are covered. Arming while uncovered connections are open emits a `media-fault-injector-uncovered` event with their ids.
+- **Change or clear the fn any time on a covered connection.** `setMediaFaultInjector` again swaps the fn mid-call; `clearMediaFaultInjector()` switches the transform to pass-through. No renegotiation either way.
+- **`fn` must be self-contained.** It is shipped as source text to the worker, so it can't close over page variables. Use the worker global `self` for state. Non-expression sources (method shorthand, bound or native functions) throw on arm.
+- **Report back with `report(payload)`.** The 4th argument posts any structured-cloneable payload to the page as a `media-fault-report` event (`connectionId`, `kind`, `direction`, `trackId`, `payload`) via `onEvent`/`getEvents`. A throwing fn passes the frame through and emits one `media-fault-injector-error` per endpoint.
+- **Connections the app configures with `encodedInsertableStreams: true` are never covered.** In Chromium the legacy API and `.transform` feed the same frame slot, and the later one silently starves the earlier, so the inspector stays off those connections. An endpoint that already carries an app `.transform` is skipped too (`media-transform-failed`), and if the app sets `.transform` later, the app's replaces the inspector's.
+- **CSP.** The worker is a `blob:` URL created from the page, so the page's `worker-src`/`script-src` must allow `blob:`. If they don't, `setMediaFaultInjector` throws with that message.
 
 ### MCP server
 
@@ -250,7 +262,7 @@ Approximate diagnostic signal, not a certified MOS/VMAF measurement.
 
 ### Reconnect / fault-injection primitives
 
-`browserContext.setOffline()` and DevTools' `Network.emulateNetworkConditions` don't touch already-flowing WebRTC UDP media. `pfctl`/`tc` is the OS-level fallback. `setMediaFaultInjector` (Chromium only) is the page-JS alternative.
+`browserContext.setOffline()` and DevTools' `Network.emulateNetworkConditions` don't touch already-flowing WebRTC UDP media. `pfctl`/`tc` is the OS-level fallback. `simulateNetworkLoss({targets: ['media']})` (mid-call outgoing blackout) and `setMediaFaultInjector` (per-frame, armed before the connection exists) are the page-JS alternatives.
 
 | Primitive | Tests |
 |---|---|
@@ -326,7 +338,7 @@ Pushes per-connection `qualityScore`, `bitrateKbps`, `rttMs`, `jitterMs`, `lossP
 
 ## Known limitations
 
-- **`setMediaFaultInjector` is Chromium-only** — uses `createEncodedStreams()`. No-ops silently elsewhere.
+- **`setMediaFaultInjector` covers only connections created while it is armed** — a browser constraint of `RTCRtpScriptTransform` (see [Media fault injection](#media-fault-injection)). For a mid-call media outage use `simulateNetworkLoss({targets: ['media']})`, which needs no transform.
 - **Decoded payloads aren't redacted** — `registerDecoder` output is size-capped but not scrubbed. Redaction is the caller's responsibility.
 - **SFU app-message channels** — some SFU transports route control-plane messages over `WebSocket` instead of `RTCDataChannel`. Covered here since `WebSocket` is patched.
 - **Unpatched transports** — WebTransport, SSE, or a native channel carrying control-plane traffic is invisible.
@@ -340,7 +352,7 @@ Tracked as issues: https://github.com/zoharbabin/webrtc-inspector/issues
 
 ```sh
 npm install
-npx playwright install --with-deps chromium   # once
+npx playwright install --with-deps chromium firefox webkit   # once
 npm test                                      # headless run
 npm run test:ui                               # interactive UI mode
 npm run lint
@@ -348,6 +360,8 @@ npm run pack-extension                        # -> dist/webrtc-inspector-extensi
 ```
 
 Playwright suite under `test/specs/`, one file per feature area. Specs connect two `RTCPeerConnection`s directly in one page (no signaling server) via `test/fixtures/session-helpers.js`.
+
+The suite runs on Chromium. The two media-path specs (`media-fault-injection.spec.js`, `network-fault.spec.js`) also run on Firefox and WebKit, since `setMediaFaultInjector` and the `'media'` outage target are engine-neutral. `npx playwright test --project=firefox --project=webkit` runs just those.
 
 `test/specs/mcp-server.spec.js` launches a real Chromium with `--remote-debugging-port`. It spawns `mcp/server.js` as a subprocess over stdio, via the MCP SDK's `Client`, and drives a real loopback session through the MCP tools.
 

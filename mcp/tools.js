@@ -267,7 +267,7 @@ function registerTools(server, cdpEndpoint) {
     'wrtc_simulate_network_loss',
     {
       description:
-        "Real dropped sends on websocket/datachannel/media/http for durationMs, then auto-restore. Awaits the full outage and returns once it's done — no early-stop handle over MCP.",
+        "Real dropped sends on websocket/datachannel/http for durationMs, then auto-restore. 'media' blacks out every outgoing track (replaceTrack(null), restored after). Awaits the full outage and returns once it's done — no early-stop handle over MCP.",
       inputSchema: {
         durationMs: z.number(),
         targets: z.array(z.enum(['websocket', 'datachannel', 'media', 'http'])).optional(),
