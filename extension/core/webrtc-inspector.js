@@ -368,6 +368,7 @@
         // the poll clobber the meter's reason, leaving level null with no reason.
         levelUnavailableReason: null,
         freezeCount: null, totalFreezesDuration: null, freezeRatio: null, qualityFlag: null, addedAt: Date.now(),
+        qualityScore: null,
       };
       record.remoteTracks.push(trackRecord);
       // First, before anything that can throw: Chromium only accepts a receiver
@@ -1312,8 +1313,18 @@ self.onrtctransform = (ev) => {
   }
 
   function updateAvSyncDelta(record, reports) {
-    const audio = avgJitterBufferDelayMs(reports.find((r) => r.type === 'inbound-rtp' && r.kind === 'audio'));
-    const video = avgJitterBufferDelayMs(reports.find((r) => r.type === 'inbound-rtp' && r.kind === 'video'));
+    const audioReports = reports.filter((r) => r.type === 'inbound-rtp' && r.kind === 'audio');
+    const videoReports = reports.filter((r) => r.type === 'inbound-rtp' && r.kind === 'video');
+    // More than one remote track of a kind (e.g. camera + screen-share video)
+    // means there's no single "the" audio/video pair to diff — picking one of
+    // each with find() would silently report a delta for tracks that were
+    // never actually meant to be in sync with each other.
+    if (audioReports.length !== 1 || videoReports.length !== 1) {
+      record.avSyncDeltaMs = null;
+      return;
+    }
+    const audio = avgJitterBufferDelayMs(audioReports[0]);
+    const video = avgJitterBufferDelayMs(videoReports[0]);
     record.avSyncDeltaMs = audio != null && video != null ? audio - video : null;
   }
 
@@ -1421,9 +1432,46 @@ self.onrtctransform = (ev) => {
     return 1 + 4 * t;
   }
 
+  // record.qualityScore below picks the first report of each kind — a fine
+  // single-track heuristic, but on a connection with more than one remote
+  // track of the same kind (camera + screen-share) it silently scores
+  // whichever track getStats() happens to list first, and every track would
+  // report back that same arbitrary number via getTrackDiagnostics. This
+  // computes a genuine per-track score from that track's own report,
+  // correlated by trackIdentifier the same way freeze ratio already is.
+  const prevVideoReportByTrackRecord = new WeakMap();
+
+  function trackQualityScore(trackRecord, report, rttMs, ts) {
+    if (report.kind === 'audio') {
+      if (rttMs == null) return null;
+      const jitterMs = (report.jitter || 0) * 1000;
+      const totalPackets = (report.packetsLost || 0) + (report.packetsReceived || 0);
+      const lossPercent = totalPackets > 0 ? (report.packetsLost / totalPackets) * 100 : 0;
+      return audioMosFromRtcp(rttMs, jitterMs, lossPercent);
+    }
+    const prev = prevVideoReportByTrackRecord.get(trackRecord);
+    prevVideoReportByTrackRecord.set(trackRecord, { report, ts });
+    if (!prev) return null;
+    const dtSec = (ts - prev.ts) / 1000;
+    if (dtSec <= 0) return null;
+    const bitrateBps = ((report.bytesReceived - prev.report.bytesReceived) * 8) / dtSec;
+    return videoScoreFromBitrate(bitrateBps, report.frameWidth, report.frameHeight, report.framesPerSecond);
+  }
+
+  function updateRemoteTrackQualityScores(record, reports, rttMs, ts) {
+    reports.forEach((report) => {
+      if (report.type !== 'inbound-rtp' || (report.kind !== 'audio' && report.kind !== 'video') || !report.trackIdentifier) return;
+      const trackRecord = record.remoteTracks.find((t) => t.trackId === report.trackIdentifier);
+      if (!trackRecord) return;
+      trackRecord.qualityScore = trackQualityScore(trackRecord, report, rttMs, ts);
+    });
+  }
+
   function updateQualityScore(record, reports, ts) {
     const selectedPair = findSelectedCandidatePair(reports);
     const rttMs = selectedPair && typeof selectedPair.currentRoundTripTime === 'number' ? selectedPair.currentRoundTripTime * 1000 : null;
+
+    updateRemoteTrackQualityScores(record, reports, rttMs, ts);
 
     let audioScore = null;
     const audioReport = reports.find((r) => r.type === 'inbound-rtp' && r.kind === 'audio');
@@ -1901,7 +1949,11 @@ self.onrtctransform = (ev) => {
         return {
           connectionId: record.id, kind: remote.kind, status: remote.status,
           freezeRatio: remote.freezeRatio, qualityFlag: remote.qualityFlag,
-          qualityScore: record.qualityScore,
+          // Prefer this track's own score; fall back to the connection-level
+          // heuristic only when no trackIdentifier-correlated report has
+          // scored it yet (e.g. this poll hasn't run, or the browser omits
+          // trackIdentifier) — see updateRemoteTrackQualityScores above.
+          qualityScore: remote.qualityScore != null ? remote.qualityScore : record.qualityScore,
         };
       }
     }
