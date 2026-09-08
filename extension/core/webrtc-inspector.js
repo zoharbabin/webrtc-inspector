@@ -688,7 +688,14 @@ self.onrtctransform = (ev) => {
       // Only put back what we removed: skip if the app replaced/removed the track meanwhile.
       if ((record && record.closed) || sender.track !== null || track.readyState !== 'live') return undefined;
       return OriginalRTCRtpSenderReplaceTrack.call(sender, track);
-    }).catch(() => {}))).then(() => undefined);
+    }).catch((err) => {
+      // A rejected/thrown restore must not vanish silently — same trust
+      // principle as the app-facing replaceTrack wrapper's track-replace-
+      // failed event below. Without this, the sender is left dark and
+      // simulateNetworkLoss still reports network-loss-end as if every
+      // track had actually come back.
+      emit({ type: 'media-blackout-restore-failed', connectionId: record ? record.id : null, kind: track.kind, trackId: track.id, error: String((err && err.message) || err) });
+    }))).then(() => undefined);
   }
 
   // MediaStreamTrack's spec-defined 'ended' EVENT does not fire for an explicit

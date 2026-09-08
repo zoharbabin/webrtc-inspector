@@ -2,7 +2,7 @@
 const { defineConfig, devices } = require('@playwright/test');
 
 const isCI = !!process.env.CI;
-const MEDIA_SPECS = ['**/media-fault-injection.spec.js', '**/network-fault.spec.js', '**/fake-media.spec.js'];
+const MEDIA_SPECS = ['**/media-fault-injection.spec.js', '**/network-fault.spec.js', '**/fake-media.spec.js', '**/media-blackout-restore-failure.spec.js'];
 
 module.exports = defineConfig({
   testDir: 'test/specs',
