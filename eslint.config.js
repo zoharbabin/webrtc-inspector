@@ -35,6 +35,7 @@ module.exports = [
         clearInterval: 'readonly',
         atob: 'readonly',
         Uint8Array: 'readonly',
+        TextDecoder: 'readonly',
         alert: 'readonly',
         module: 'readonly',
         location: 'readonly',
@@ -119,7 +120,11 @@ module.exports = [
     languageOptions: {
       ecmaVersion: 2021,
       sourceType: 'commonjs',
-      globals: { require: 'readonly', module: 'readonly', __dirname: 'readonly', console: 'readonly', process: 'readonly' },
+      globals: {
+        require: 'readonly', module: 'readonly', __dirname: 'readonly', console: 'readonly', process: 'readonly',
+        Buffer: 'readonly', URLSearchParams: 'readonly',
+        setInterval: 'readonly', clearInterval: 'readonly', setTimeout: 'readonly', clearTimeout: 'readonly',
+      },
     },
   },
   {

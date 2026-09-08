@@ -23,6 +23,10 @@ function collectTests(suites, fileName, rows) {
         rows.push({
           file: suite.file || fileName,
           title: spec.title,
+          // The media specs run on chromium, firefox and webkit, so without the
+          // project the same title appears three times with no way to tell which
+          // engine failed.
+          project: test.projectName || '',
           status: test.status,
           durationMs: lastResult ? lastResult.duration : 0,
         });
@@ -60,11 +64,11 @@ for (const row of rows) {
 for (const [file, fileRows] of byFile) {
   lines.push(`### ${path.basename(file)}`);
   lines.push('');
-  lines.push('| Status | Test | Duration |');
-  lines.push('|---|---|---|');
+  lines.push('| Status | Browser | Test | Duration |');
+  lines.push('|---|---|---|---|');
   for (const row of fileRows) {
     const icon = STATUS_ICON[row.status] || '❔';
-    lines.push(`| ${icon} | ${row.title} | ${row.durationMs}ms |`);
+    lines.push(`| ${icon} | ${row.project} | ${row.title} | ${row.durationMs}ms |`);
   }
   lines.push('');
 }

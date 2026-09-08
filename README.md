@@ -69,7 +69,7 @@ Swap step 4 for `wrtc_restart_ice` (renegotiate without tearing down) or `wrtc_s
 - `RTCRtpSender.replaceTrack`
 - `MediaStreamTrack.stop` — patched directly. The spec doesn't fire `'ended'` for a self-initiated `stop()`.
 - `WebSocket`
-- `fetch` / `XMLHttpRequest` — covers HTTP-based signaling (WHIP/WHEP, SDP-over-HTTP). Previews land in `getSnapshot().httpRequests`. Faultable via `simulateNetworkLoss({targets: ['http']})`.
+- `fetch` / `XMLHttpRequest` — covers HTTP-based signaling (WHIP/WHEP, SDP-over-HTTP). Previews land in `getSnapshot().httpRequests`. Faultable via `simulateNetworkLoss({targets: ['http']})`. Response previews are bounded on both paths: `fetch` samples a clone, capped at 8 KiB and 1.5s, and XHR keeps only the first 8 KiB of `responseText`. A large download never grows extension memory, and the app's own copy of the body is untouched either way. The time bound is `fetch`-only: there, a slow body or an open-ended content type (`text/event-stream`, `multipart/*`, NDJSON, gRPC) completes the record with headers and no preview instead of holding it open. XHR has no equivalent, because it only reports a body at `loadend` — an XHR that streams forever stays `pending` until the page goes away.
 - `getUserMedia` / `getDisplayMedia`
 
 It must run before the page's own scripts grab references to these globals — that's why it's a `document_start` patch, not a regular script.
@@ -114,7 +114,7 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` m
 
 | Method | Does |
 |---|---|
-| `getSnapshot(opts?)` | Full state: connections, tracks, SDP/ICE summaries, data channels, WebSockets, HTTP requests, stats, flags, last 100 log entries. JSON-serializable. `opts.detail: 'concise'` drops raw stats/log/message dumps, keeps derived metrics. Default: `'detailed'`. |
+| `getSnapshot(opts?)` | Full state: connections, tracks, SDP/ICE summaries, data channels, WebSockets, HTTP requests, stats, flags, last 100 log entries. `activeOutages` lists the targets currently blocked by `simulateNetworkLoss`. JSON-serializable. `opts.detail: 'concise'` drops raw stats/log/message dumps, keeps derived metrics. Default: `'detailed'`. |
 | `getSnapshotDiff(before, after)` | Delta between two `getSnapshot()` outputs: connections/WebSockets added/removed, and changed fields for the rest. |
 | `exportBundle()` | `{exportedAt, version, snapshot, fullLog, statsHistory}` — full event log and full per-connection stats history, for bug reports. |
 | `exportWebrtcInternalsDump()` | Same data as `exportBundle()`, reshaped to `chrome://webrtc-internals`' "Create Dump" format: `{UserAgent, getUserMedia, PeerConnections: {<id>: {url, rtcConfiguration, updateLog, stats}}}`. |
@@ -143,22 +143,27 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` m
 | `sendOnWebSocket(socketId, data)` | Real `send()` on a tracked socket. |
 | `killConnection(connId)` | Real `pc.close()` — abrupt transport death. |
 | `restartIce(connId)` | Real `pc.restartIce()` — renegotiate in place, no teardown. |
-| `simulateNetworkLoss(durationMs, {targets})` | Drops sends on `websocket`/`datachannel` (default both) for `durationMs`, then restores. `'http'` also fails every `fetch`/XHR. `'media'` blacks out every live sender with `replaceTrack(null)` and gives the track back on restore: works mid-call on any connection, all engines, no renegotiation. Firefox still sends about one RTP packet per second on a track-less sender; Chromium and WebKit send none. Returns `{stop, done}`. |
+| `simulateNetworkLoss(durationMs, {targets})` | Drops sends on `websocket`/`datachannel` (default both) for `durationMs`, then restores. `'http'` also fails every `fetch`/XHR. `'media'` blacks out every live sender with `replaceTrack(null)` and gives the track back on restore: works mid-call on any connection, all engines, no renegotiation. Firefox still sends about one RTP packet per second on a track-less sender; Chromium and WebKit send none. Returns `{stop, done}`. Overlapping calls nest per target: the last one to end lifts the block, and `stop()` is idempotent. |
 | `simulateNetworkPreset(name)` / `registerNetworkPreset(name, config)` | Named scenarios on `simulateNetworkLoss`. Ships `'home-wifi'`, `'4g-train'`, `'congested-mobile'`. `config = {durationMs, targets, pattern:'full'\|'flapping', flapIntervalMs?}`. Returns `{stop, done}`. |
-| `setMediaFaultInjector(connId, kind, fn)` / `clearMediaFaultInjector()` | Per-frame fault injection through the standard WebRTC Encoded Transform (`RTCRtpScriptTransform`). `kind: 'audio'\|'video'`, `null` matches all. `fn(direction, frame, meta, report)` runs in a worker. Mutate `frame.data` to corrupt; return `false` to drop, `'duplicate'` to duplicate, `{delayMs}` to delay/reorder. One injector at a time. Details below. |
+| `setMediaFaultInjector(connId, kind, fn)` / `clearMediaFaultInjector()` | Per-frame fault injection through the standard WebRTC Encoded Transform (`RTCRtpScriptTransform`). `kind: 'audio'\|'video'`, `null` matches all. `fn(direction, frame, meta, report)` runs in a worker. Mutate `frame.data` to corrupt; return `false` to drop, `{delayMs}` to delay/reorder. One injector at a time. Details below. |
 
 Every track from patched `getUserMedia`/`getDisplayMedia` is tagged (`fake-mic`/`real-device`/`display-capture`/`fake-cam`), visible in `getSnapshot()`.
+
+Everything the inspector retains is capped, so a long-lived page or a reconnect loop can't grow it without bound: 5000 log entries, 60 stats samples per connection, 200 HTTP records, 100 WebSocket records. Socket eviction drops closed records oldest-first and never a live one, so a socket id stays addressable for as long as that socket is open.
 
 #### Media fault injection
 
 `setMediaFaultInjector` uses `RTCRtpScriptTransform` (Chrome 141+, Firefox 117+, Safari 15.4+), not Chromium's legacy `createEncodedStreams()`. On an older browser it throws on arm. Rules that follow from how browsers implement it:
 
-- **Arm it before the connection is created.** Chromium only accepts a sender transform before `setLocalDescription` and a receiver transform inside the `track` event, and clearing a live transform stalls media. So coverage is decided when a `RTCPeerConnection` is constructed and never removed. `getSnapshot().connections[i].mediaFaultInjectable` tells you which connections are covered. Arming while uncovered connections are open emits a `media-fault-injector-uncovered` event with their ids.
+- **Arm it before the connection is created.** Chromium only accepts a sender transform before `setLocalDescription` and a receiver transform inside the `track` event, and clearing a live transform stalls media. So coverage is decided when a `RTCPeerConnection` is constructed and never removed. `getSnapshot().connections[i].mediaFaultInjectable` tells you which connections are eligible, and `mediaFaultCoveredEndpoints` how many sender or receiver endpoints actually carry the transform right now. `0` on an eligible connection means no fault can reach the media path. Each endpoint that takes the transform emits a `media-transform-installed` event (`connectionId`, `kind`, `direction`); one that can't emits `media-transform-failed` with the reason. Arming while uncovered connections are open emits a `media-fault-injector-uncovered` event with their ids.
 - **Change or clear the fn any time on a covered connection.** `setMediaFaultInjector` again swaps the fn mid-call; `clearMediaFaultInjector()` switches the transform to pass-through. No renegotiation either way.
 - **`fn` must be self-contained.** It is shipped as source text to the worker, so it can't close over page variables. Use the worker global `self` for state. Non-expression sources (method shorthand, bound or native functions) throw on arm.
 - **Report back with `report(payload)`.** The 4th argument posts any structured-cloneable payload to the page as a `media-fault-report` event (`connectionId`, `kind`, `direction`, `trackId`, `payload`) via `onEvent`/`getEvents`. A throwing fn passes the frame through and emits one `media-fault-injector-error` per endpoint.
 - **Connections the app configures with `encodedInsertableStreams: true` are never covered.** In Chromium the legacy API and `.transform` feed the same frame slot, and the later one silently starves the earlier, so the inspector stays off those connections. An endpoint that already carries an app `.transform` is skipped too (`media-transform-failed`), and if the app sets `.transform` later, the app's replaces the inspector's.
-- **CSP.** The worker is a `blob:` URL created from the page, so the page's `worker-src`/`script-src` must allow `blob:`. If they don't, `setMediaFaultInjector` throws with that message.
+- **There is no duplicate-frame action, because the platform can't do one.** Enqueueing a second copy of an encoded frame succeeds in the worker on all three engines and produces zero extra RTP: measured `packetsSent` over a fixed window was identical to baseline on Chromium, Firefox and WebKit, with the copy's `rtpTimestamp` shifted by 0, +1 and +3000 and its `frameId` bumped. The sender drops the extra frame before packetization. To model duplicate RTP you need a proxy or a network shaper, not an encoded transform.
+- **`{delayMs}` on a subset of frames can wedge the receiver.** Delaying *every* frame by the same amount just shifts the stream and stalls nothing. Delaying only some frames reorders them, and on Chromium and Firefox that builds a receive backlog that did not recover within 6s of measurement: with every 10th frame delayed, Chromium held `framesReceived` at 9 for ~2.7s and Firefox for ~4.8s while the sender's `framesEncoded` climbed linearly. WebKit was unaffected. Expect a reorder fault to look like a freeze, not like jitter.
+- **A byte-flip corruption fault means three different things.** Same fn, same frames: Chromium stops decoding entirely (`framesDecoded` stuck at 0, `pliCount` climbing), Firefox decodes the garbage with no PLI at all, and WebKit's *sender* stops emitting packets while its encoder keeps running. Assert on "the stream broke", never on a specific counter, if your test runs on more than one engine.
+- **CSP.** The worker is a `blob:` URL created from the page, so the page's `worker-src`/`script-src` must allow `blob:`. A blocked worker does not throw from the arm that created it, because it fails asynchronously: watch for a `media-fault-injector-error` with `stage: 'worker'`, or read `getSnapshot().mediaFaultWorkerError`. Once that is set the injector is disarmed and every later `setMediaFaultInjector` throws with the reason. **A connection created in the same tick as the arm is not protected by that**, because the worker's error arrives later: measured on a `worker-src 'self'` page, Chromium installed the transform both directions and then sent zero packets for the life of that connection (a silent total blackout), Firefox refused the transform and left media alone, WebKit installed it and kept sending anyway. On a page whose CSP you don't control, arm the injector and check `mediaFaultWorkerError` before you create the connection you care about.
 
 ### MCP server
 
@@ -221,7 +226,9 @@ Covers the pure-JSON surface: snapshots/diffs/bundles/captures, `getSdp`, `killC
 
 `simulateNetworkLoss` blocks until the outage finishes. There's no early `stop()` across the MCP boundary.
 
-Not exposed, since these are live JS references that can't cross the MCP boundary: `setMediaFaultInjector`, `setDataChannelInterceptor`, `setWebSocketInterceptor`, `registerDecoder`, `setSuggestDecoder`, `setLabeler`, `setIceCandidateFilter`, `onEvent`, `replaceOutgoingTrack`, `getFakeMicTrack`. Use `core/webrtc-inspector.js` in-page for those instead.
+Not exposed, since these take or return live JS references that can't cross the MCP boundary: `setMediaFaultInjector`, `setDataChannelInterceptor`, `setWebSocketInterceptor`, `registerDecoder`, `setSuggestDecoder`, `setLabeler`, `setIceCandidateFilter`, `onEvent`, `replaceOutgoingTrack`, `getFakeMicTrack`, `getRemoteTrackStream`.
+
+Also not exposed, though it is pure JSON: `getEvents`. Use `wrtc_capture_events` for the log instead, or `core/webrtc-inspector.js` in-page for cursor-based pagination.
 
 ### Claude Code Skill
 
@@ -247,6 +254,23 @@ Approximate diagnostic signal, not a certified MOS/VMAF measurement.
 
 `getSnapshot().connections[].remoteTracks[].qualityFlag` — `'ok'`, `'degraded'`, or `'bad'`, based on that track's `freezeRatio`: `> 0.10` → `bad`, `> 0.01` → `degraded`, else `ok`. `null` until the track has a stats sample. More sensitive than the connection-level `freeze_ratio_bad` flag below (which only fires past 10%) — a track can show `degraded` while the connection's `flags` array stays empty. Check both when triaging quality, not just `flags`.
 
+### Remote audio `level`
+
+`getSnapshot().connections[].remoteTracks[].level` — 0-1 loudness from a Web Audio analyser on the remote track. Treat `0` and `null` differently: zero is measured silence, `null` is no measurement.
+
+`levelUnavailableReason` is `'track-not-rendered'` when RTP is arriving but the browser is not decoding it, which happens because nothing in the page is rendering the track. Chromium only runs a remote track's audio decoder for a track something pulls, so the analyser would otherwise read pure silence and the inspector would report "the far end is silent" when the truth is "nothing is listening". In that state `level` is `null`, not `0`.
+
+Attach the track to a sink and the level starts reading:
+
+```js
+const el = document.createElement('audio');
+el.autoplay = true;
+el.srcObject = new MediaStream([remoteTrack]);
+document.body.appendChild(el);
+```
+
+Firefox and WebKit decode a remote audio track with no sink attached, so they report a real level either way. Detection is a stats delta (packets growing while `totalSamplesReceived` stays flat), so it needs two stats polls before the reason appears. Any other `null` level, with `levelUnavailableReason` also `null`, just means no sample yet.
+
 ### `flags`
 
 `getSnapshot().connections[].flags` — short machine-readable strings, computed live. Empty when nothing looks wrong.
@@ -259,6 +283,8 @@ Approximate diagnostic signal, not a certified MOS/VMAF measurement.
 | `freeze_ratio_bad:<trackId>` | Remote track `freezeRatio` above 10%. |
 | `quality_limited_<reason>:<trackId>` | Local track `qualityLimitationReason` is non-`'none'`. |
 | `candidate_type_flipped_<n>x` | Selected candidate type flipped (srflx↔relay) 2+ times. |
+
+Every flag except `quality_limited_*` works on all three engines. Firefox does not report `qualityLimitationReason` on `outbound-rtp` at all, so on Firefox that flag never fires and `localTracks[].qualityLimitationReason` stays `null` even while the encoder is CPU- or bandwidth-limited. The freeze metrics behind `freeze_ratio_bad` and `qualityFlag` are reported by Chromium, Firefox and WebKit alike, so use those for cross-engine quality triage.
 
 ### Reconnect / fault-injection primitives
 

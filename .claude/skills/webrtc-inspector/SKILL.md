@@ -51,12 +51,25 @@ Each eval call is an isolated invocation — nothing local survives between call
 3. Also check each `remoteTracks[].qualityFlag` (`ok`/`degraded`/`bad`) directly — it fires at 1% freeze ratio, well before the connection-level `freeze_ratio_bad` flag (10%). A track can be `degraded` with `flags` still empty; don't rely on `flags` alone.
 4. Once you've reproduced the issue, `wrtc_export_bundle()` — attach its output verbatim to a bug report; it carries the full event log and stats history, not just the current snapshot.
 
+### "Is remote audio actually arriving"
+
+`remoteTracks[].level` distinguishes two different things, and reading them as the same is the most common way to misdiagnose audio:
+
+- `level: 0` — measured, and the audio really is silent.
+- `level: null` with `levelUnavailableReason: 'track-not-rendered'` — nothing measured. In Chromium the audio decoder only runs for a remote track the page is actually rendering, so with no `<audio>`/`<video>` sink the meter has nothing to read. Firefox and WebKit decode either way. This is a page setup fact, not an audio fault.
+- `level: null` with `levelUnavailableReason: null` — no sample taken yet; poll again.
+
+So don't report "no audio" off a null level. Confirm it against the stats instead: two `wrtc_get_snapshot` calls a few seconds apart, and check whether `packetsReceived` is growing. Packets growing while samples stay flat means the track arrives but nothing renders it.
+
 ### Signaling-outage / heartbeat testing
 
 1. Know your app's heartbeat/reconnect interval before picking a duration — the outage needs to outlast it to actually trigger reconnect logic.
 2. Named, realistic scenario: `wrtc_simulate_network_preset({name})` — `'home-wifi'`, `'4g-train'`, `'congested-mobile'`, or one already registered via `wrtc_register_network_preset`.
 3. Custom outage: `wrtc_simulate_network_loss({durationMs, targets})`. `targets` defaults to `['websocket', 'datachannel']`; add `'http'` for WHIP/WHEP/SDP-over-HTTP signaling, `'media'` to black out every outgoing track for the duration (`replaceTrack(null)`, then restored; works mid-call on all engines).
 4. Both tools block until the outage finishes and auto-restore — there's no early-stop handle over MCP, so pick a duration you actually want to wait out.
+5. Overlapping outages nest per target, so a second outage starting inside the first doesn't get lifted early when the first one ends. `getSnapshot().activeOutages` lists the targets blocked right now — check it if traffic isn't flowing and you expected an outage to be over.
+
+Reading captured HTTP signaling (WHIP/WHEP, SDP over POST): `responsePreview` is a bounded sample, not the whole body. It's capped at 8 KB and 1.5s, and it's absent entirely for open-ended content types (`text/event-stream`, `multipart/*`, NDJSON, gRPC), which are recorded with headers only. A large SDP or ICE payload may therefore be truncated in the preview — read it from the page, not the record, if you need every byte. The app's own copy of the body is never affected.
 
 ## Optional modules — when to reach past the primitives above
 

@@ -2,7 +2,7 @@
 const { defineConfig, devices } = require('@playwright/test');
 
 const isCI = !!process.env.CI;
-const MEDIA_SPECS = ['**/media-fault-injection.spec.js', '**/network-fault.spec.js'];
+const MEDIA_SPECS = ['**/media-fault-injection.spec.js', '**/network-fault.spec.js', '**/fake-media.spec.js'];
 
 module.exports = defineConfig({
   testDir: 'test/specs',
@@ -42,9 +42,10 @@ module.exports = defineConfig({
       },
     },
     // The media-path specs also run on Firefox and WebKit: setMediaFaultInjector
-    // uses the standard RTCRtpScriptTransform and simulateNetworkLoss's 'media'
-    // target uses replaceTrack(null), so both must hold on every engine. The rest
-    // of the suite (extension, MCP over CDP) is Chromium by nature.
+    // uses the standard RTCRtpScriptTransform, simulateNetworkLoss's 'media'
+    // target uses replaceTrack(null), and the remote audio meter uses Web Audio,
+    // so all three must hold on every engine. The rest of the suite (extension,
+    // MCP over CDP) is Chromium by nature.
     {
       name: 'firefox',
       testMatch: MEDIA_SPECS,

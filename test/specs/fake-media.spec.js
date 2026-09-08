@@ -53,31 +53,73 @@ test.describe('Fake mic/cam and track lifecycle', () => {
     expect(recA.localTracks.find((t) => t.sourceTag === 'fake-mic').status).toBe('ended');
   });
 
-  test('meters remote audio track level as a number', async ({ page }) => {
-    const connectionIdB = await page.evaluate(async () => {
-      await window.__webrtcInspector.setFakeMic(window.__SILENT_WAV);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  // The meter reads a Web Audio analyser on the remote track. That only reflects
+  // real audio when something is pulling the track, so this test attaches an
+  // app-side <audio> sink and asserts a level above the noise floor. Asserting
+  // only `typeof level === 'number'` would pass on pure digital silence.
+  test('meters a real remote audio level when the app renders the track', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); // fake device: audible tone
       // Track must be added before the offer/answer round, or the peer never
       // renegotiates and the remote 'track' event on pcB never fires.
       const { connectionIdB } = await window.testHelpers.createLoopbackSession('test-channel', (pcA) => {
         stream.getTracks().forEach((t) => pcA.addTrack(t, stream));
       });
-      window.__webrtcInspector.playIntoFakeMic();
-      return connectionIdB;
+
+      // The app's own sink. Without one, Chromium never runs the decoder.
+      const remote = window.__pcB.getReceivers().find((r) => r.track && r.track.kind === 'audio').track;
+      const el = document.createElement('audio');
+      el.autoplay = true;
+      el.srcObject = new MediaStream([remote]);
+      document.body.appendChild(el);
+      try { await el.play(); } catch { /* autoplay policy: the sink still pulls */ }
+
+      const track = () => {
+        const recB = window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === connectionIdB);
+        return recB && recB.remoteTracks.find((t) => t.kind === 'audio');
+      };
+      let maxLevel = 0;
+      let reasonWhenMetered = 'never-metered';
+      await window.testHelpers.waitFor(() => {
+        const t = track();
+        if (t && typeof t.level === 'number' && t.level > maxLevel) {
+          maxLevel = t.level;
+          reasonWhenMetered = t.levelUnavailableReason;
+        }
+        return maxLevel > 0.01;
+      }, 8000, 100);
+      return { maxLevel, unavailableReason: reasonWhenMetered };
     });
-    // Let ICE finish gathering + the level-meter interval (250ms) sample at least once.
-    await page.waitForFunction(
-      (id) => {
-        const recB = window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id);
-        const track = recB && recB.remoteTracks.find((t) => t.kind === 'audio');
-        return !!track && typeof track.level === 'number';
-      },
-      connectionIdB,
-      { timeout: 3000 }
-    );
-    const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
-    const recB = snap.connections.find((c) => c.id === connectionIdB);
-    expect(typeof recB.remoteTracks.find((t) => t.kind === 'audio').level).toBe('number');
+    expect(result.maxLevel).toBeGreaterThan(0.01);
+    expect(result.unavailableReason).toBeNull();
+  });
+
+  // Chromium runs the audio decoder only for a remote track something renders.
+  // With no app sink, totalSamplesReceived never advances while RTP keeps
+  // arriving, so the analyser reads pure silence. Reporting level 0 there would
+  // claim "the far end is silent" when the truth is "nothing is pulling this
+  // track", so the meter reports null plus a reason instead.
+  test('reports level null with a reason when nothing renders the remote track', async ({ page, browserName }) => {
+    test.skip(browserName !== 'chromium', 'Firefox and WebKit decode a remote audio track with no sink attached');
+    const result = await page.evaluate(async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const { connectionIdB } = await window.testHelpers.createLoopbackSession('test-channel', (pcA) => {
+        stream.getTracks().forEach((t) => pcA.addTrack(t, stream));
+      });
+      const track = () => {
+        const recB = window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === connectionIdB);
+        return recB && recB.remoteTracks.find((t) => t.kind === 'audio');
+      };
+      // Needs two stats polls (2s each) to see packets growing while samples stay flat.
+      await window.testHelpers.waitFor(() => {
+        const t = track();
+        return t && t.levelUnavailableReason === 'track-not-rendered';
+      }, 9000, 200);
+      const t = track();
+      return { level: t.level, reason: t.levelUnavailableReason };
+    });
+    expect(result.reason).toBe('track-not-rendered');
+    expect(result.level).toBeNull();
   });
 
   test('getFakeMicTrack returns a fresh clone tagged fake-mic', async ({ page }) => {

@@ -79,6 +79,33 @@ test.describe('WebSocket instrumentation', () => {
     expect(await page.evaluate(() => window.__wsMessages.length)).toBe(receivedCountBefore);
   });
 
+  // A page that churns sockets (reconnect loops, one socket per request) used to
+  // grow socketsById forever, pinning every closed WebSocket object and its
+  // message previews for the life of the tab. Eviction drops closed records
+  // oldest first and never touches a live one.
+  test('evicts closed socket records but keeps live sockets addressable', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const keeperId = window.__webrtcInspector.getSnapshot().webSockets.find((s) => s.url.endsWith('/app-message')).id;
+      for (let i = 0; i < 200; i++) {
+        const churn = new WebSocket(`wss://mock.test/churn-${i}`);
+        churn.close();
+      }
+      const snap = window.__webrtcInspector.getSnapshot();
+      let sendThrew = false;
+      try { window.__webrtcInspector.sendOnWebSocket(keeperId, 'keeper-still-works'); } catch { sendThrew = true; }
+      return {
+        socketCount: snap.webSockets.length,
+        keeperStillTracked: snap.webSockets.some((s) => s.id === keeperId),
+        sendThrew,
+        keeperSent: window.__ws.sent.includes('keeper-still-works'),
+      };
+    });
+    expect(result.socketCount).toBeLessThanOrEqual(100);
+    expect(result.keeperStillTracked).toBe(true);
+    expect(result.sendThrew).toBe(false);
+    expect(result.keeperSent).toBe(true);
+  });
+
   test('clearWebSocketInterceptor is reflected in the snapshot', async ({ page }) => {
     await page.evaluate(() => {
       window.__webrtcInspector.setWebSocketInterceptor(() => false);

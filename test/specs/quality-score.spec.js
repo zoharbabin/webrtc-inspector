@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { gotoFixture } = require('../helpers');
+const { gotoFixture, STATS_POLL_WAIT_MS } = require('../helpers');
 
 // As with the other derived-metric suites, getStats() is overridden on the
 // live pc instance to feed deterministic RTCP-adjacent numbers into the
@@ -24,7 +24,7 @@ test.describe('MOS-style quality score', () => {
     await page.waitForFunction(
       (id) => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).qualityScore !== null,
       connectionIdA,
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     expect(snap.connections.find((c) => c.id === connectionIdA).qualityScore).toBeGreaterThan(4);
@@ -41,7 +41,7 @@ test.describe('MOS-style quality score', () => {
     await page.waitForFunction(
       (id) => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).qualityScore !== null,
       connectionIdA,
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     expect(snap.connections.find((c) => c.id === connectionIdA).qualityScore).toBe(1);
@@ -64,7 +64,7 @@ test.describe('MOS-style quality score', () => {
     await page.waitForFunction(
       (id) => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).qualityScore !== null,
       connectionIdA,
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     expect(snap.connections.find((c) => c.id === connectionIdA).qualityScore).toBeGreaterThanOrEqual(4.9);
@@ -85,7 +85,7 @@ test.describe('MOS-style quality score', () => {
     await page.waitForFunction(
       (id) => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).qualityScore !== null,
       connectionIdA,
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     expect(snap.connections.find((c) => c.id === connectionIdA).qualityScore).toBe(1);
@@ -110,7 +110,7 @@ test.describe('MOS-style quality score', () => {
     await page.waitForFunction(
       (id) => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).qualityScore !== null,
       connectionIdA,
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     const score = snap.connections.find((c) => c.id === connectionIdA).qualityScore;

@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { gotoFixture, SILENT_WAV_BASE64 } = require('../helpers');
+const { gotoFixture, SILENT_WAV_BASE64, STATS_POLL_WAIT_MS } = require('../helpers');
 
 test.describe('RTCPeerConnection instrumentation', () => {
   test.beforeEach(async ({ page }) => {
@@ -115,7 +115,7 @@ test.describe('RTCPeerConnection instrumentation', () => {
         return !!track && track.qualityLimitationReason !== null;
       },
       { id: connectionIdA, trackId },
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     const recA = snap.connections.find((c) => c.id === connectionIdA);
@@ -136,11 +136,72 @@ test.describe('RTCPeerConnection instrumentation', () => {
     await page.waitForFunction(
       (id) => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).latestStats !== null,
       connectionIdA,
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     const recA = snap.connections.find((c) => c.id === connectionIdA);
     const track = recA.localTracks.find((t) => t.trackId === trackId);
     expect(track.qualityLimitationReason).toBeNull();
+  });
+
+  // close() sets connectionState directly per spec, and on a connection that
+  // never negotiated it fires no event at all, so the record can only learn
+  // about an app-initiated close from the patched close() itself. If it doesn't,
+  // the 2s stats poll and every audio meter keep running for the life of the
+  // page and getSnapshot() reports a dead connection as live.
+  test('an app-initiated pc.close() closes the record, stops the stats poll, and is idempotent', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const { connectionIdA } = await window.testHelpers.createLoopbackSession('close-direct');
+      const rec = () => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === connectionIdA);
+      await window.testHelpers.waitFor(() => rec().latestStats, 8000, 100); // need one poll to have a timestamp to compare
+      window.__pcA.close();
+      const closedImmediately = rec().closed;
+      const tsAtClose = rec().latestStats.ts;
+      window.__pcA.close(); // a second close must not emit a second pc-closed
+      await window.testHelpers.wait(3000); // longer than one 2s poll interval
+      const closeEvents = window.__webrtcInspector
+        .getEvents()
+        .events.filter((e) => e.type === 'pc-closed' && e.connectionId === connectionIdA);
+      return {
+        closedImmediately,
+        pollStopped: rec().latestStats.ts === tsAtClose,
+        closeEventCount: closeEvents.length,
+        reason: closeEvents.length ? closeEvents[0].reason : null,
+      };
+    });
+    expect(result.closedImmediately).toBe(true);
+    expect(result.pollStopped).toBe(true);
+    expect(result.closeEventCount).toBe(1);
+    expect(result.reason).toBe('closed');
+  });
+
+  // The patched constructor shares the native prototype, so without the
+  // constructor fix `pc.constructor` is the native RTCPeerConnection while
+  // `window.RTCPeerConnection` is the patched one. Apps that compare the two to
+  // feature-detect would see a mismatch that only exists because we are loaded.
+  test('patched RTCPeerConnection and WebSocket stay indistinguishable from the native ones', async ({ page }) => {
+    const result = await page.evaluate(() => {
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      const ws = new WebSocket('ws://127.0.0.1:9/never-connects');
+      const out = {
+        pcInstanceof: pc instanceof RTCPeerConnection,
+        pcConstructor: pc.constructor === RTCPeerConnection,
+        pcConstructorHidden: !Object.keys(Object.getPrototypeOf(pc)).includes('constructor'),
+        wsInstanceof: ws instanceof WebSocket,
+        wsConstructor: ws.constructor === WebSocket,
+        pcName: RTCPeerConnection.prototype === Object.getPrototypeOf(pc),
+      };
+      pc.close();
+      ws.close();
+      return out;
+    });
+    expect(result).toEqual({
+      pcInstanceof: true,
+      pcConstructor: true,
+      pcConstructorHidden: true,
+      wsInstanceof: true,
+      wsConstructor: true,
+      pcName: true,
+    });
   });
 });

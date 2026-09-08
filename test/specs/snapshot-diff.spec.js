@@ -67,10 +67,12 @@ test.describe('getSnapshotDiff()', () => {
       });
       const before = window.__webrtcInspector.getSnapshot();
       window.__dcA.send('hi');
+      // qualityScore is only computed on a stats poll (2s apart), so this wait
+      // has to clear a full interval plus scheduling slack.
       await window.testHelpers.waitFor(() => {
         const rec = window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === connectionIdA);
         return rec.qualityScore !== null;
-      });
+      }, 8000);
       const after = window.__webrtcInspector.getSnapshot();
       return { connectionIdA, diff: window.__webrtcInspector.getSnapshotDiff(before, after) };
     });

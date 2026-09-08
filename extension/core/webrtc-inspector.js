@@ -30,7 +30,7 @@
     return;
   }
 
-  const config = { statsIntervalMs: 2000, maxLogEntries: 5000, maxStatsHistory: 60, levelIntervalMs: 250, maxDecodedPreviewChars: 500, maxHttpHistory: 200 };
+  const config = { statsIntervalMs: 2000, maxLogEntries: 5000, maxStatsHistory: 60, levelIntervalMs: 250, maxDecodedPreviewChars: 500, maxHttpHistory: 200, maxSocketHistory: 100 };
   // Thresholds for getSnapshot()'s heuristic anomaly flags (see #25) — each is
   // "how long a suspicious-looking state has to persist before it's worth
   // flagging", tuned low enough to keep loopback tests fast.
@@ -40,6 +40,7 @@
   const trackTagById = new WeakMap(); // MediaStreamTrack -> {tag, sourceCallId}
   const trackRecordByTrack = new WeakMap(); // MediaStreamTrack -> trackRecord (for explicit stop() detection)
   const freezeTrackingStartByTrackRecord = new WeakMap(); // remote video trackRecord -> Date.now() at track start, for freezeRatio's elapsed-time denominator
+  const audioMeterProbeByTrackRecord = new WeakMap(); // remote audio trackRecord -> last {samples, packets}, for detecting an undecoded track
   const log = [];
   const listeners = new Set();
   let nextConnectionId = 1;
@@ -54,11 +55,39 @@
   let suggestDecoder = null; // (payload, meta) => any | Promise<any> — single active advisory hook, mirrors ws/dc interceptors
   let mediaFaultInjector = null; // {connId, kind, fnSource} | null — single active injector, mirrors ws/dc interceptors
   let mediaFaultWorker = null; // lazily created Worker that runs every RTCRtpScriptTransform we attach
+  let mediaFaultWorkerError = null; // set once the worker dies (CSP blocked the blob: URL); no endpoint is covered after that
   const mediaTransformEndpoints = new WeakSet(); // RTCRtpSender|RTCRtpReceiver that already carry our transform
   let labeler = null; // (meta) => string|null — single active hook, mirrors ws/dc interceptors
   const iceCandidateFilters = new Map(); // connectionId -> predicateFn(candidateType, candidateStr) => boolean, false drops
 
   let nextSeq = 1;
+
+  // ---- outage state (simulateNetworkLoss) --------------------------------
+  //
+  // Ref-counted per target so overlapping outages nest: the last one to end
+  // lifts the block. The interceptor slots are deliberately NOT used to
+  // implement an outage — the send/receive paths consult outageDepth directly.
+  // Swapping a blocker into the interceptor slot and restoring the previous
+  // value per call breaks whenever two outages overlap: the earlier-ending one
+  // restores app state while the other is still running (media leaks through),
+  // and the later-ending one restores the other's blocker as if it were the
+  // app's own, leaving the page permanently blocked.
+  const outageDepth = { websocket: 0, datachannel: 0, http: 0, media: 0 };
+
+  function acquireOutage(target) {
+    outageDepth[target] += 1;
+    if (target === 'media' && outageDepth.media === 1) startMediaBlackout();
+  }
+
+  // Returns a promise for the targets whose teardown is asynchronous (media), so
+  // a caller can wait for the outage to be genuinely over. Resolves immediately
+  // for every other target.
+  function releaseOutage(target) {
+    if (outageDepth[target] === 0) return Promise.resolve();
+    outageDepth[target] -= 1;
+    if (target === 'media' && outageDepth.media === 0) return endMediaBlackout();
+    return Promise.resolve();
+  }
 
   function emit(entry) {
     entry.ts = entry.ts || Date.now();
@@ -308,8 +337,7 @@
       record.state.connectionState = pc.connectionState;
       emit({ type: 'connection-state', connectionId: id, state: pc.connectionState });
       if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
-        record.closed = true;
-        stopStatsPolling(record);
+        markConnectionClosed(record, pc.connectionState);
       }
     });
     pc.addEventListener('signalingstatechange', () => {
@@ -334,14 +362,27 @@
       const tag = trackTagById.get(ev.track);
       const trackRecord = {
         trackId: ev.track.id, kind: ev.track.kind, label: ev.track.label, sourceTag: tag ? tag.tag : null, status: 'live', level: null,
+        levelUnavailableReason: null,
         freezeCount: null, totalFreezesDuration: null, freezeRatio: null, qualityFlag: null, addedAt: Date.now(),
       };
       record.remoteTracks.push(trackRecord);
+      // First, before anything that can throw: Chromium only accepts a receiver
+      // transform synchronously inside this handler, so a throw from the audio
+      // meter (AudioContext limit, non-fully-active document) would otherwise
+      // cost incoming fault coverage for the rest of the call with no signal.
+      // installMediaTransform never throws — it reports via media-transform-failed.
+      installMediaTransform(record, ev.receiver, 'incoming', ev.track.kind);
       freezeTrackingStartByTrackRecord.set(trackRecord, Date.now());
       attachTrackLifecycle(record, trackRecord, ev.track, 'remote');
-      if (ev.track.kind === 'audio') meterRemoteAudioTrack(trackRecord, ev.track);
+      if (ev.track.kind === 'audio') {
+        try {
+          meterRemoteAudioTrack(record, trackRecord, ev.track);
+        } catch (err) {
+          trackRecord.levelUnavailableReason = 'meter-failed';
+          emit({ type: 'audio-meter-failed', connectionId: id, trackId: ev.track.id, error: String((err && err.message) || err) });
+        }
+      }
       emit({ type: 'track-received', connectionId: id, kind: ev.track.kind, trackId: ev.track.id, sourceTag: tag ? tag.tag : null });
-      installMediaTransform(record, ev.receiver, 'incoming', ev.track.kind); // must stay synchronous inside this handler (Chromium)
     });
     pc.addEventListener('datachannel', (ev) => {
       instrumentDataChannel(record, ev.channel, 'remote');
@@ -353,6 +394,30 @@
   PatchedRTCPeerConnection.prototype = OriginalRTCPeerConnection.prototype;
   Object.setPrototypeOf(PatchedRTCPeerConnection, OriginalRTCPeerConnection);
   window.RTCPeerConnection = PatchedRTCPeerConnection;
+  // The prototype is shared with the native constructor, so `pc.constructor`
+  // would otherwise be the native RTCPeerConnection while `window.RTCPeerConnection`
+  // is the patched one. Apps that compare the two (`pc.constructor === RTCPeerConnection`)
+  // must not be able to tell the inspector is loaded.
+  defineHiddenConstructor(OriginalRTCPeerConnection.prototype, PatchedRTCPeerConnection);
+
+  // close() does not reliably fire connectionstatechange: per spec it sets the
+  // state directly, and on a connection that never negotiated no event fires at
+  // all. Without this patch an app's own close() leaves the record open, so the
+  // 2s stats poll and the audio meters run for the life of the page and
+  // getSnapshot() reports a dead connection as live.
+  const originalPcClose = OriginalRTCPeerConnection.prototype.close;
+  OriginalRTCPeerConnection.prototype.close = function () {
+    const result = originalPcClose.apply(this, arguments);
+    const record = recordByPc.get(this);
+    if (record) markConnectionClosed(record, 'closed');
+    return result;
+  };
+
+  function defineHiddenConstructor(proto, ctor) {
+    try {
+      Object.defineProperty(proto, 'constructor', { value: ctor, writable: true, enumerable: false, configurable: true });
+    } catch (_) { /* a frozen prototype is not worth failing instrumentation over */ }
+  }
 
   function attachTrackLifecycle(record, trackRecord, track, origin) {
     trackRecordByTrack.set(track, trackRecord);
@@ -368,9 +433,16 @@
   // the injector fn is shipped as source text and must be self-contained: no
   // closures over page state. fn(direction, frame, meta, report) receives the
   // live encoded frame — its writable .data lets it corrupt in place with no
-  // special return value; 'duplicate'/{delayMs}/false cover actions the
-  // platform has no direct API for. report(payload) posts a cloneable payload
-  // back to the page as a 'media-fault-report' event.
+  // special return value; {delayMs}/false cover actions the platform has no
+  // direct API for. report(payload) posts a cloneable payload back to the page
+  // as a 'media-fault-report' event.
+  //
+  // There is deliberately no 'duplicate' action. Enqueueing a second copy of an
+  // encoded frame succeeds in the worker on every engine and still produces
+  // zero extra RTP: measured packetsSent over a fixed window was identical to
+  // baseline on Chromium, Firefox and WebKit, with the copy's rtpTimestamp
+  // shifted by 0, +1 and +3000 and its frameId bumped. The sender drops the
+  // extra frame before packetization. Don't re-add it.
   //
   // Nothing is attached unless an injector is armed when the connection is
   // created (record.mediaFaultInjectable). Chromium only accepts a sender
@@ -423,14 +495,25 @@ function matches(inj, meta) {
   return (inj.connId == null || inj.connId === meta.connId) && (inj.kind == null || inj.kind === meta.kind);
 }
 
-function cloneFrame(frame) {
-  try { return new frame.constructor(frame, { metadata: frame.getMetadata() }); } catch (_) { return null; }
-}
-
 self.onrtctransform = (ev) => {
   const meta = ev.transformer.options || {};
-  const report = (payload) => self.postMessage({ type: 'report', meta, payload });
   let reportedError = false;
+  const reportOnce = (stage, message) => {
+    if (reportedError) return;
+    reportedError = true;
+    self.postMessage({ type: 'injector-error', stage: stage, meta: meta, message: message });
+  };
+  // A non-cloneable payload makes postMessage throw. Unguarded, that throw
+  // escapes the injector, is caught below as an injector failure, and turns an
+  // intended drop (return false) into a sent frame — silently changing what the
+  // fault does. Report the bad payload and let the injector's return value stand.
+  const report = (payload) => {
+    try {
+      self.postMessage({ type: 'report', meta: meta, payload: payload });
+    } catch (err) {
+      reportOnce('report', 'report() payload is not structured-cloneable: ' + String((err && err.message) || err));
+    }
+  };
   const ts = new TransformStream({
     transform(frame, controller) {
       if (outage) return;
@@ -441,18 +524,9 @@ self.onrtctransform = (ev) => {
         action = inj.fn(meta.direction, frame, meta, report);
       } catch (err) {
         action = undefined; // a throwing injector passes the frame through
-        if (!reportedError) {
-          reportedError = true;
-          self.postMessage({ type: 'injector-error', stage: 'run', meta, message: String((err && err.message) || err) });
-        }
+        reportOnce('run', String((err && err.message) || err));
       }
       if (action === false) return; // drop
-      if (action === 'duplicate') {
-        controller.enqueue(frame);
-        const copy = cloneFrame(frame);
-        if (copy) controller.enqueue(copy);
-        return;
-      }
       if (action && typeof action.delayMs === 'number') {
         setTimeout(() => { try { controller.enqueue(frame); } catch (_) { /* stream closed before the delay elapsed */ } }, action.delayMs);
         return;
@@ -470,13 +544,20 @@ self.onrtctransform = (ev) => {
     return typeof window.RTCRtpScriptTransform === 'function' && typeof window.Worker === 'function';
   }
 
+  const WORKER_CSP_HINT = "The page's Content-Security-Policy must allow blob: workers (worker-src/script-src).";
+
   function getMediaFaultWorker() {
+    // A CSP-blocked blob: worker does NOT throw from `new Worker` — it fails
+    // asynchronously through the error event. Once that has happened, refusing
+    // here is what keeps a transform from being attached in front of a worker
+    // that will never consume a frame, which stalls the media path outright.
+    if (mediaFaultWorkerError) throw new Error(`setMediaFaultInjector: the transform worker died (${mediaFaultWorkerError}). ${WORKER_CSP_HINT}`);
     if (mediaFaultWorker) return mediaFaultWorker;
     let worker;
     try {
       worker = new Worker(URL.createObjectURL(new Blob([MEDIA_FAULT_WORKER_SOURCE], { type: 'text/javascript' })));
     } catch (err) {
-      throw new Error(`setMediaFaultInjector: could not start the transform worker (${err && err.message}). The page's Content-Security-Policy must allow blob: workers (worker-src/script-src).`);
+      throw new Error(`setMediaFaultInjector: could not start the transform worker (${err && err.message}). ${WORKER_CSP_HINT}`);
     }
     worker.onmessage = (e) => {
       const msg = e.data || {};
@@ -488,7 +569,10 @@ self.onrtctransform = (ev) => {
       }
     };
     worker.onerror = (e) => {
-      emit({ type: 'media-fault-injector-error', stage: 'worker', message: (e && e.message) || 'worker error (blocked by Content-Security-Policy?)' });
+      const message = (e && e.message) || 'worker error (blocked by Content-Security-Policy?)';
+      mediaFaultWorkerError = message;
+      mediaFaultInjector = null; // nothing can run, so stop claiming a connection is injectable
+      emit({ type: 'media-fault-injector-error', stage: 'worker', message: `${message}. ${WORKER_CSP_HINT}` });
     };
     mediaFaultWorker = worker;
     return worker;
@@ -509,6 +593,7 @@ self.onrtctransform = (ev) => {
     try {
       endpoint.transform = new window.RTCRtpScriptTransform(worker, meta);
       mediaTransformEndpoints.add(endpoint);
+      record.mediaFaultCoveredEndpoints = (record.mediaFaultCoveredEndpoints || 0) + 1;
       emit({ type: 'media-transform-installed', connectionId: record.id, kind, direction });
     } catch (err) {
       emit({ type: 'media-transform-failed', connectionId: record.id, kind, direction, error: String((err && err.message) || err) });
@@ -540,36 +625,65 @@ self.onrtctransform = (ev) => {
   // sender gets replaceTrack(null), which stops RTP on all engines mid-call
   // with no renegotiation, then gets its track back on restore. Endpoints that
   // do carry our transform additionally drop both directions via the worker.
+  //
+  // The blacked-out set is module state, not a per-call snapshot, so a sender
+  // the app adds while the outage is running is blacked out too — otherwise a
+  // track added mid-outage would keep sending and the outage would silently
+  // cover less than it claims. Lifecycle is owned by acquireOutage/
+  // releaseOutage, which ref-count overlapping outages.
+  let mediaBlackout = null; // { blackedOut: [] } while the media target is down
+
+  // Whatever the app last set on a sender is what the outage owes it back, so a
+  // sender never holds two pending restores. Without this, an app track swapped
+  // in mid-outage would race the original for the restore slot.
+  function forgetBlackedOutSender(sender) {
+    if (!mediaBlackout) return;
+    mediaBlackout.blackedOut = mediaBlackout.blackedOut.filter((e) => e.sender !== sender);
+  }
+
+  function blackOutSender(record, sender) {
+    if (!mediaBlackout || !OriginalRTCRtpSenderReplaceTrack || !sender) return;
+    const track = sender.track;
+    if (!track) return;
+    forgetBlackedOutSender(sender);
+    try {
+      const settled = OriginalRTCRtpSenderReplaceTrack.call(sender, null).catch(() => {});
+      mediaBlackout.blackedOut.push({ record: record || null, sender, track, settled });
+    } catch (_) { /* sender already closed */ }
+  }
+
+  function recordForSender(sender) {
+    let found = null;
+    connectionsById.forEach((record) => {
+      if (found || record.closed) return;
+      try { if (record.pc.getSenders().indexOf(sender) !== -1) found = record; } catch (_) { /* pc closed */ }
+    });
+    return found;
+  }
+
   function startMediaBlackout() {
-    const blackedOut = [];
-    if (OriginalRTCRtpSenderReplaceTrack) {
-      connectionsById.forEach((record) => {
-        if (record.closed) return;
-        let senders = [];
-        try { senders = record.pc.getSenders(); } catch (_) { return; }
-        senders.forEach((sender) => {
-          const track = sender.track;
-          if (!track) return;
-          try {
-            const settled = OriginalRTCRtpSenderReplaceTrack.call(sender, null).catch(() => {});
-            blackedOut.push({ record, sender, track, settled });
-          } catch (_) { /* sender already closed */ }
-        });
-      });
-    }
+    mediaBlackout = { blackedOut: [] };
+    connectionsById.forEach((record) => {
+      if (record.closed) return;
+      let senders = [];
+      try { senders = record.pc.getSenders(); } catch (_) { return; }
+      senders.forEach((sender) => blackOutSender(record, sender));
+    });
     if (mediaFaultWorker) mediaFaultWorker.postMessage({ type: 'outage', active: true });
-    return {
-      restore() {
-        if (mediaFaultWorker) mediaFaultWorker.postMessage({ type: 'outage', active: false });
-        blackedOut.forEach(({ record, sender, track, settled }) => {
-          settled.then(() => {
-            // Only put back what we removed: skip if the app replaced/removed the track meanwhile.
-            if (record.closed || sender.track !== null || track.readyState !== 'live') return;
-            return OriginalRTCRtpSenderReplaceTrack.call(sender, track);
-          }).catch(() => {});
-        });
-      },
-    };
+  }
+
+  // Returns a promise that settles once every sender has actually had its track
+  // put back, so callers can report the outage as over only when it really is.
+  function endMediaBlackout() {
+    const outage = mediaBlackout;
+    mediaBlackout = null;
+    if (mediaFaultWorker) mediaFaultWorker.postMessage({ type: 'outage', active: false });
+    if (!outage) return Promise.resolve();
+    return Promise.all(outage.blackedOut.map(({ record, sender, track, settled }) => settled.then(() => {
+      // Only put back what we removed: skip if the app replaced/removed the track meanwhile.
+      if ((record && record.closed) || sender.track !== null || track.readyState !== 'live') return undefined;
+      return OriginalRTCRtpSenderReplaceTrack.call(sender, track);
+    }).catch(() => {}))).then(() => undefined);
   }
 
   // MediaStreamTrack's spec-defined 'ended' EVENT does not fire for an explicit
@@ -602,6 +716,7 @@ self.onrtctransform = (ev) => {
     if (record) {
       logLocalTrack(record, track);
       installMediaTransform(record, result, 'outgoing', track.kind);
+      blackOutSender(record, result);
     }
     return result;
   };
@@ -616,14 +731,33 @@ self.onrtctransform = (ev) => {
         emit({ type: 'transceiver-added', connectionId: record.id, kind, direction: init && init.direction });
         if (trackOrKind && typeof trackOrKind !== 'string') logLocalTrack(record, trackOrKind);
         installMediaTransform(record, result.sender, 'outgoing', kind);
+        blackOutSender(record, result.sender);
       }
       return result;
     };
   }
 
+  // An answering peer's senders are created by setRemoteDescription, not by
+  // addTrack/addTransceiver, so nothing else in this file ever sees them. Sweep
+  // every transceiver here, synchronously before the native call, because
+  // Chromium only accepts a sender transform before setLocalDescription.
+  // installMediaTransform skips endpoints it already covers, so this is a no-op
+  // on the offerer path and safe to run on every renegotiation.
+  function coverExistingSenders(record, pc) {
+    if (!record.mediaFaultInjectable) return;
+    let transceivers = [];
+    try { transceivers = pc.getTransceivers(); } catch (_) { return; }
+    transceivers.forEach((tr) => {
+      if (!tr.sender) return;
+      const kind = (tr.sender.track && tr.sender.track.kind) || (tr.receiver && tr.receiver.track && tr.receiver.track.kind) || null;
+      installMediaTransform(record, tr.sender, 'outgoing', kind);
+    });
+  }
+
   const originalSetLocalDescription = OriginalRTCPeerConnection.prototype.setLocalDescription;
   OriginalRTCPeerConnection.prototype.setLocalDescription = function (description) {
     const record = recordByPc.get(this);
+    if (record) coverExistingSenders(record, this);
     return originalSetLocalDescription.apply(this, [description]).then((res) => {
       if (record) {
         const sdp = description ? description.sdp : this.localDescription && this.localDescription.sdp;
@@ -675,7 +809,17 @@ self.onrtctransform = (ev) => {
     window.RTCRtpSender.prototype.replaceTrack = function (newTrack) {
       const tag = newTrack ? trackTagById.get(newTrack) : null;
       emit({ type: 'track-replaced', kind: newTrack ? newTrack.kind : null, trackId: newTrack ? newTrack.id : null, sourceTag: tag ? tag.tag : null });
-      return OriginalRTCRtpSenderReplaceTrack.call(this, newTrack);
+      const sender = this;
+      return OriginalRTCRtpSenderReplaceTrack.call(sender, newTrack).then((res) => {
+        // The app's choice wins: drop any restore we still owe this sender, then
+        // keep the new track dark for the rest of the outage. An app that clears
+        // the track mid-outage gets no track back when the outage lifts.
+        if (mediaBlackout) {
+          forgetBlackedOutSender(sender);
+          if (newTrack) blackOutSender(recordForSender(sender), sender);
+        }
+        return res;
+      });
     };
   }
 
@@ -698,6 +842,11 @@ self.onrtctransform = (ev) => {
     channel.addEventListener('close', () => { dcRecord.state = 'closed'; });
     channel.addEventListener('message', (ev) => {
       let data = ev.data;
+      if (outageDepth.datachannel > 0) {
+        emit({ type: 'datachannel-message-blocked', connectionId: record.id, label: channel.label, dir: 'in' });
+        ev.stopImmediatePropagation();
+        return;
+      }
       if (dataChannelInterceptor) {
         const result = dataChannelInterceptor('in', { connectionId: record.id, label: channel.label, data });
         if (result === false) {
@@ -726,6 +875,10 @@ self.onrtctransform = (ev) => {
       const originalSend = channel.send.bind(channel);
       channel.send = function (data) {
         let payload = data;
+        if (outageDepth.datachannel > 0) {
+          emit({ type: 'datachannel-message-blocked', connectionId: record.id, label: channel.label, dir: 'out' });
+          return;
+        }
         if (dataChannelInterceptor) {
           const result = dataChannelInterceptor('out', { connectionId: record.id, label: channel.label, data: payload });
           if (result === false) {
@@ -759,6 +912,20 @@ self.onrtctransform = (ev) => {
   // page's own code can get a reference to the socket and attach its own —
   // so it always runs first, making in-flight rewrite/block reliable.
 
+  // Each socket record pins the WebSocket object and up to 200 message previews,
+  // so on a page that churns sockets (reconnect loops, per-request sockets) an
+  // unbounded map is a leak that grows for as long as the tab lives. Only
+  // already-closed records are dropped, oldest first: a live socket stays
+  // addressable by id for injectWebSocketMessage/sendOnWebSocket no matter how
+  // many sockets the page has opened.
+  function evictClosedSockets() {
+    if (socketsById.size <= config.maxSocketHistory) return;
+    for (const [id, record] of socketsById) {
+      if (socketsById.size <= config.maxSocketHistory) break;
+      if (record.state === 'closed') socketsById.delete(id);
+    }
+  }
+
   const OriginalWebSocket = window.WebSocket;
 
   if (OriginalWebSocket) {
@@ -767,6 +934,7 @@ self.onrtctransform = (ev) => {
       const id = nextSocketId++;
       const record = { id, url: String(url), protocol: null, state: 'connecting', sentCount: 0, receivedCount: 0, messages: [], ws };
       socketsById.set(id, record);
+      evictClosedSockets();
       wsRecordByInstance.set(ws, record);
       emit({ type: 'websocket-created', socketId: id, url: record.url });
 
@@ -784,6 +952,11 @@ self.onrtctransform = (ev) => {
       });
       ws.addEventListener('message', (ev) => {
         let data = ev.data;
+        if (outageDepth.websocket > 0) {
+          emit({ type: 'websocket-message-blocked', socketId: id, dir: 'in' });
+          ev.stopImmediatePropagation();
+          return;
+        }
         if (webSocketInterceptor) {
           const result = webSocketInterceptor('in', { socketId: id, url: record.url, data });
           if (result === false) {
@@ -818,12 +991,17 @@ self.onrtctransform = (ev) => {
     PatchedWebSocket.CLOSING = OriginalWebSocket.CLOSING;
     PatchedWebSocket.CLOSED = OriginalWebSocket.CLOSED;
     window.WebSocket = PatchedWebSocket;
+    defineHiddenConstructor(OriginalWebSocket.prototype, PatchedWebSocket);
 
     const originalWsSend = OriginalWebSocket.prototype.send;
     OriginalWebSocket.prototype.send = function (data) {
       const record = wsRecordByInstance.get(this);
       if (!record) return originalWsSend.call(this, data);
       let payload = data;
+      if (outageDepth.websocket > 0) {
+        emit({ type: 'websocket-message-blocked', socketId: record.id, dir: 'out' });
+        return;
+      }
       if (webSocketInterceptor) {
         const result = webSocketInterceptor('out', { socketId: record.id, url: record.url, data: payload });
         if (result === false) {
@@ -870,7 +1048,18 @@ self.onrtctransform = (ev) => {
 
   const httpRequestsById = new Map(); // id -> record, insertion-ordered for eviction
   let nextHttpId = 1;
-  let httpBlocked = false;
+
+  // Response-body sampling limits. preview() truncates to 200 chars, so there is
+  // never a reason to buffer more than a few KB. Reading the whole body would
+  // (a) hold the entire response in extension memory for the life of the record
+  // (a 256 MiB download cost 256 MiB to produce a 201-char preview) and
+  // (b) never finish on an endless streaming response, leaving the record
+  // 'pending' forever and buffering that stream for as long as the page lives.
+  const maxBodySampleBytes = 8 * 1024;
+  const bodySampleTimeoutMs = 1500;
+  // Content types whose bodies are open-ended by design: sampling them would
+  // stall the record forever, so only headers are captured.
+  const streamingContentType = /^\s*(text\/event-stream|multipart\/|application\/(x-)?ndjson|application\/grpc)/i;
 
   function recordHttpRequest(method, url) {
     const id = nextHttpId++;
@@ -898,6 +1087,58 @@ self.onrtctransform = (ev) => {
     ));
   }
 
+  // Samples at most maxBodySampleBytes from a clone of the response, then
+  // cancels that branch. Cancelling one branch of a teed body does not cancel
+  // the other, so the app still reads its own response in full. Always finishes
+  // the record, even if the body stalls mid-stream.
+  function captureResponseBody(record, response) {
+    const finish = (responseBody) => finishHttpRequest(record, { statusCode: response.status, responseBody });
+
+    let contentType = '';
+    try { contentType = response.headers.get('content-type') || ''; } catch (_) { /* opaque response */ }
+    if (streamingContentType.test(contentType)) { finish(undefined); return; }
+
+    let body = null;
+    try { body = response.clone().body; } catch (_) { /* already-consumed or opaque response */ }
+    if (!body || typeof body.getReader !== 'function') { finish(undefined); return; }
+
+    const reader = body.getReader();
+    let settled = false;
+    const chunks = [];
+    let total = 0;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { reader.cancel(); } catch (_) { /* already closed */ }
+      if (!total) { finish(undefined); return; }
+      const merged = new Uint8Array(Math.min(total, maxBodySampleBytes));
+      let offset = 0;
+      for (const chunk of chunks) {
+        if (offset >= merged.length) break;
+        const slice = chunk.subarray(0, merged.length - offset);
+        merged.set(slice, offset);
+        offset += slice.length;
+      }
+      let text;
+      try { text = new TextDecoder('utf-8', { fatal: false }).decode(merged); } catch (_) { text = undefined; }
+      finish(text);
+    };
+    const timer = setTimeout(settle, bodySampleTimeoutMs);
+
+    (function pump() {
+      reader.read().then(
+        ({ value, done }) => {
+          if (settled) return;
+          if (value && value.byteLength) { chunks.push(value); total += value.byteLength; }
+          if (done || total >= maxBodySampleBytes) { settle(); return; }
+          pump();
+        },
+        settle
+      );
+    }());
+  }
+
   const OriginalFetch = window.fetch ? window.fetch.bind(window) : null;
   if (OriginalFetch) {
     window.fetch = function (input, init) {
@@ -906,20 +1147,14 @@ self.onrtctransform = (ev) => {
       const record = recordHttpRequest(method, url);
       record.requestPreview = preview((init && init.body) || null);
 
-      if (httpBlocked) {
+      if (outageDepth.http > 0) {
         finishHttpRequest(record, { error: 'blocked by simulateNetworkLoss' });
         emit({ type: 'http-request-blocked', httpId: record.id, method, url: record.url });
         return Promise.reject(new TypeError('Failed to fetch: simulated network loss'));
       }
 
       return OriginalFetch(input, init).then(
-        (response) => {
-          response.clone().text().then(
-            (text) => finishHttpRequest(record, { statusCode: response.status, responseBody: text }),
-            () => finishHttpRequest(record, { statusCode: response.status })
-          );
-          return response;
-        },
+        (response) => { captureResponseBody(record, response); return response; },
         (err) => { finishHttpRequest(record, { error: err }); throw err; }
       );
     };
@@ -940,7 +1175,7 @@ self.onrtctransform = (ev) => {
       const record = recordHttpRequest(this.__inspectorMethod || 'GET', this.__inspectorUrl || '');
       record.requestPreview = preview(body || null);
 
-      if (httpBlocked) {
+      if (outageDepth.http > 0) {
         finishHttpRequest(record, { error: 'blocked by simulateNetworkLoss' });
         emit({ type: 'http-request-blocked', httpId: record.id, method: record.method, url: record.url });
         setTimeout(() => this.dispatchEvent(new Event('error')), 0);
@@ -950,7 +1185,14 @@ self.onrtctransform = (ev) => {
       this.addEventListener('loadend', () => {
         if (!this.status) { finishHttpRequest(record, { error: 'network error' }); return; }
         let responseBody;
-        try { responseBody = this.responseType === '' || this.responseType === 'text' ? this.responseText : `<${this.responseType} response>`; } catch (_) { /* responseText throws for some responseTypes mid-flight */ }
+        try {
+          // Sliced to the same budget as the fetch sampler. Touching the whole
+          // responseText would copy the entire body into a new JS string just to
+          // make a 200-char preview, so a large download cost its own size again.
+          responseBody = this.responseType === '' || this.responseType === 'text'
+            ? this.responseText.slice(0, maxBodySampleBytes)
+            : `<${this.responseType} response>`;
+        } catch (_) { /* responseText throws for some responseTypes mid-flight */ }
         finishHttpRequest(record, { statusCode: this.status, responseBody });
       });
       return OriginalXHRSend.call(this, body);
@@ -976,12 +1218,26 @@ self.onrtctransform = (ev) => {
         updateCandidateTypeFlip(record, summary.reports);
         updateAvSyncDelta(record, summary.reports);
         updateRemoteTrackFreeze(record, summary.reports);
+        updateRemoteAudioMeterValidity(record, summary.reports);
         updateQualityScore(record, summary.reports, summary.ts);
       } catch (_) { /* getStats can race a just-closed connection */ }
     }, config.statsIntervalMs);
   }
   function stopStatsPolling(record) {
     if (record.__statsTimer) clearInterval(record.__statsTimer);
+  }
+
+  // Every path that ends a connection funnels through here, because a record
+  // left with closed: false keeps a 2s getStats interval and a 250ms audio
+  // meter running for the life of the page, and makes getSnapshot() report a
+  // dead connection as live. Idempotent: called again, it does nothing.
+  function markConnectionClosed(record, reason) {
+    if (record.closed) return;
+    record.closed = true;
+    stopStatsPolling(record);
+    (record.__levelMeterStops || []).forEach((stop) => stop());
+    record.__levelMeterStops = [];
+    emit({ type: 'pc-closed', connectionId: record.id, reason });
   }
 
   // outbound-rtp reports carry no stable track-id field in modern Chromium, but
@@ -1062,6 +1318,41 @@ self.onrtctransform = (ev) => {
     });
   }
 
+  // Chromium only runs the audio decoder for a remote track that something is
+  // actually rendering. With no sink of the app's own (a media element, or Web
+  // Audio it drives itself), totalSamplesReceived never advances even while RTP
+  // keeps arriving, so our analyser tap reads pure digital silence. Reporting
+  // level: 0 there would claim "the far end is silent" when the truth is
+  // "nothing is pulling this track". Firefox and WebKit decode regardless, so
+  // this only ever trips on Chromium. Detection is a stats delta: packets in,
+  // samples flat. When it trips, level goes null and the reason says why.
+  //
+  // Two consecutive flat polls are required, because during warm-up the first
+  // packets arrive a poll before the decoder produces its first samples. Judging
+  // on one delta reports a rendered track as unrendered for ~2s and pins its
+  // level to null, so a caller sampling early sees no audio on a healthy call.
+  // Recovery is immediate in the other direction: one decoding poll clears it.
+  const NOT_RENDERED_CONFIRM_POLLS = 2;
+  function updateRemoteAudioMeterValidity(record, reports) {
+    reports.forEach((report) => {
+      if (report.type !== 'inbound-rtp' || report.kind !== 'audio' || !report.trackIdentifier) return;
+      const trackRecord = record.remoteTracks.find((t) => t.trackId === report.trackIdentifier);
+      if (!trackRecord) return;
+      const samples = report.totalSamplesReceived || 0;
+      const packets = report.packetsReceived || 0;
+      const prev = audioMeterProbeByTrackRecord.get(trackRecord);
+      if (!prev) { // first poll has no delta to compare
+        audioMeterProbeByTrackRecord.set(trackRecord, { samples, packets, flatPolls: 0 });
+        return;
+      }
+      const receiving = packets > prev.packets;
+      const decoding = samples > prev.samples;
+      const flatPolls = receiving && !decoding ? prev.flatPolls + 1 : 0;
+      audioMeterProbeByTrackRecord.set(trackRecord, { samples, packets, flatPolls });
+      trackRecord.levelUnavailableReason = flatPolls >= NOT_RENDERED_CONFIRM_POLLS ? 'track-not-rendered' : null;
+    });
+  }
+
   // Audio: simplified ITU-T G.107 E-model approximation (R-factor -> MOS),
   // the same constants independently reproduced by rtpengine and multiple
   // VoIP-monitoring write-ups (e.g. https://stackoverflow.com/q/54124329,
@@ -1124,21 +1415,51 @@ self.onrtctransform = (ev) => {
 
   // ---- remote audio metering ("listen" tap) ------------------------------
 
+  // An AnalyserNode only keeps its last `fftSize` samples, so the window length
+  // decides what the meter can see. A 512-sample window is 11ms at 48kHz, read
+  // once per 250ms poll: a 4% duty cycle that misses most of speech and any
+  // other bursty audio. Measured on a loopback tone, that under-reported by
+  // ~60x (0.008 reported against a true 0.49). Sizing the window to cover the
+  // whole poll interval means every sample between polls is counted, so the
+  // level is an honest short-window RMS instead of a point sample.
+  const MAX_FFT_SIZE = 32768; // Web Audio spec ceiling
+  function analyserWindowFor(sampleRate) {
+    const wanted = (sampleRate * config.levelIntervalMs) / 1000;
+    let size = 256; // spec floor
+    while (size < wanted && size < MAX_FFT_SIZE) size *= 2;
+    return size;
+  }
+
   let meterCtx = null;
-  function meterRemoteAudioTrack(trackRecord, track) {
+  function meterRemoteAudioTrack(record, trackRecord, track) {
     if (!meterCtx) meterCtx = new (window.AudioContext || window.webkitAudioContext)();
     const source = meterCtx.createMediaStreamSource(new MediaStream([track]));
     const analyser = meterCtx.createAnalyser();
-    analyser.fftSize = 512;
+    analyser.fftSize = analyserWindowFor(meterCtx.sampleRate);
     source.connect(analyser);
-    const data = new Uint8Array(analyser.frequencyBinCount);
+    // Must be fftSize long, not frequencyBinCount: getByteTimeDomainData copies
+    // min(fftSize, array.length) samples, so a half-length array reads half the
+    // window and silently discards the rest.
+    const data = new Uint8Array(analyser.fftSize);
+    const stop = () => {
+      clearInterval(timer);
+      // The nodes share the one page-wide AudioContext, so leaving them
+      // connected keeps a dead track's graph alive for the life of the page.
+      try { source.disconnect(); } catch (_) { /* already disconnected */ }
+      try { analyser.disconnect(); } catch (_) { /* already disconnected */ }
+    };
     const timer = setInterval(() => {
-      if (trackRecord.status === 'ended') { clearInterval(timer); return; }
+      if (record.closed || trackRecord.status === 'ended') { stop(); return; }
+      if (trackRecord.levelUnavailableReason) { trackRecord.level = null; return; }
       analyser.getByteTimeDomainData(data);
       let sumSquares = 0;
       for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sumSquares += v * v; }
       trackRecord.level = Math.sqrt(sumSquares / data.length); // 0 (silence) .. ~1 (full scale)
     }, config.levelIntervalMs);
+    // Registered so a close() tears the meter down immediately rather than on
+    // the next tick, and so nothing is left running if the track never ends.
+    record.__levelMeterStops = record.__levelMeterStops || [];
+    record.__levelMeterStops.push(stop);
   }
 
   function getRemoteTrackStream(connectionId, trackId) {
@@ -1309,9 +1630,8 @@ self.onrtctransform = (ev) => {
     const record = connectionsById.get(connectionId);
     if (!record) throw new Error(`No connection with id ${connectionId}`);
     emit({ type: 'connection-killed', connectionId, iceConnectionState: record.pc.iceConnectionState, connectionState: record.pc.connectionState });
-    record.pc.close();
-    record.closed = true;
-    stopStatsPolling(record);
+    record.pc.close(); // the patched close() marks the record; this is belt-and-braces
+    markConnectionClosed(record, 'killed');
   }
 
   // Renegotiate-in-place, distinct from killConnection()'s full teardown —
@@ -1325,34 +1645,29 @@ self.onrtctransform = (ev) => {
 
   function simulateNetworkLoss(durationMs, options) {
     const opts = Object.assign({ targets: ['websocket', 'datachannel'] }, options);
-    const wantWs = opts.targets.includes('websocket');
-    const wantDc = opts.targets.includes('datachannel');
-    const wantHttp = opts.targets.includes('http');
-    const wantMedia = opts.targets.includes('media');
-    const priorWsInterceptor = webSocketInterceptor;
-    const priorDcInterceptor = dataChannelInterceptor;
-    const priorHttpBlocked = httpBlocked;
+    const targets = ['websocket', 'datachannel', 'http', 'media'].filter((t) => opts.targets.includes(t));
     let stopped = false;
+    let restored = null;
 
-    if (wantWs) webSocketInterceptor = () => false;
-    if (wantDc) dataChannelInterceptor = () => false;
-    if (wantHttp) httpBlocked = true;
-    const mediaBlackout = wantMedia ? startMediaBlackout() : null;
+    targets.forEach(acquireOutage);
     emit({ type: 'network-loss-start', durationMs, targets: opts.targets });
 
     let resolveDone;
     const done = new Promise((resolve) => { resolveDone = resolve; });
 
+    // Restoring the 'media' target is asynchronous (each sender needs a
+    // replaceTrack round-trip), so done/network-loss-end must wait for it.
+    // Resolving earlier would tell the caller media is back while it is still
+    // black, and any measurement taken right after would read the outage.
     function restore() {
-      if (stopped) return;
+      if (stopped) return restored;
       stopped = true;
-      if (wantWs) webSocketInterceptor = priorWsInterceptor;
-      if (wantDc) dataChannelInterceptor = priorDcInterceptor;
-      if (wantHttp) httpBlocked = priorHttpBlocked;
-      if (mediaBlackout) mediaBlackout.restore();
       clearTimeout(timer);
-      emit({ type: 'network-loss-end', targets: opts.targets });
-      resolveDone();
+      restored = Promise.all(targets.map(releaseOutage)).then(() => {
+        emit({ type: 'network-loss-end', targets: opts.targets });
+        resolveDone();
+      });
+      return restored;
     }
 
     const timer = setTimeout(restore, durationMs);
@@ -1543,6 +1858,10 @@ self.onrtctransform = (ev) => {
         closed: r.closed,
         state: r.state,
         mediaFaultInjectable: r.mediaFaultInjectable,
+        // Eligibility (above) is decided at creation; this is how many sender or
+        // receiver endpoints actually carry the transform right now. 0 on an
+        // injectable connection means no fault can reach the media path.
+        mediaFaultCoveredEndpoints: r.mediaFaultCoveredEndpoints || 0,
         flags: computeAnomalyFlags(r, now),
         label: computeLabel({ kind: 'connection', connectionId: r.id, urls: flattenIceServerUrls(r.configuration) }),
         localTracks: r.localTracks,
@@ -1581,12 +1900,18 @@ self.onrtctransform = (ev) => {
         completedAt: r.completedAt,
         ...(concise ? {} : { requestPreview: r.requestPreview, responsePreview: r.responsePreview }),
       })),
-      httpBlocked,
+      httpBlocked: outageDepth.http > 0,
+      // Which simulateNetworkLoss targets are down right now. Independent of the
+      // *InterceptorActive flags below, which report only the app's own hooks.
+      activeOutages: Object.keys(outageDepth).filter((t) => outageDepth[t] > 0),
       fakeMicActive: !!fakeMic,
       fakeCamActive: !!fakeCam,
       dataChannelInterceptorActive: !!dataChannelInterceptor,
       webSocketInterceptorActive: !!webSocketInterceptor,
       mediaFaultInjectorActive: !!mediaFaultInjector,
+      // Non-null once the transform worker has died (CSP blocked the blob: URL).
+      // Nothing is covered after that, and arming again throws with this message.
+      mediaFaultWorkerError: mediaFaultWorkerError,
       suggestDecoderActive: !!suggestDecoder,
       labelerActive: !!labeler,
       iceCandidateFilterActive: iceCandidateFilters.size > 0,

@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { gotoFixture } = require('../helpers');
+const { gotoFixture, STATS_POLL_WAIT_MS, ANOMALY_FLAG_WAIT_MS } = require('../helpers');
 
 // getSnapshot()'s flags field (see #25) is computed live from Date.now() at
 // call time, not tied to the 2s stats-poll tick — so age-based flags (data
@@ -40,7 +40,7 @@ test.describe('Heuristic anomaly flags', () => {
         return !!rec && rec.flags.some((f) => f.startsWith('ice_stuck_checking_'));
       },
       connectionIdA,
-      { timeout: 7000 }
+      { timeout: ANOMALY_FLAG_WAIT_MS }
     );
   });
 
@@ -56,7 +56,7 @@ test.describe('Heuristic anomaly flags', () => {
         return !!rec && rec.flags.includes('datachannel_opened_never_used:idle-channel');
       },
       connectionIdA,
-      { timeout: 5000 }
+      { timeout: ANOMALY_FLAG_WAIT_MS }
     );
   });
 
@@ -94,7 +94,7 @@ test.describe('Heuristic anomaly flags', () => {
         return !!rec && rec.flags.includes(`track_added_no_stats:${tid}`);
       },
       { id: connectionIdA, tid: trackId },
-      { timeout: 5000 }
+      { timeout: ANOMALY_FLAG_WAIT_MS }
     );
   });
 
@@ -119,7 +119,7 @@ test.describe('Heuristic anomaly flags', () => {
         return !!rec && rec.flags.includes(`quality_limited_cpu:${tid}`);
       },
       { id: connectionIdA, tid: trackId },
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
   });
 
@@ -148,7 +148,7 @@ test.describe('Heuristic anomaly flags', () => {
         return !!rec && rec.flags.includes(`freeze_ratio_bad:${tid}`);
       },
       { id: connectionIdB, tid: trackId },
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
   });
 
@@ -165,11 +165,14 @@ test.describe('Heuristic anomaly flags', () => {
           [localId, { id: localId, type: 'local-candidate', candidateType: type }],
         ]);
       };
+      // One stats poll (2s) per step, so 3s here was only 1.5x the interval:
+      // enough to lose on a loaded machine, and losing one step means the flip
+      // it was setting up never registers.
       for (i = 0; i < pairs.length; i++) {
         await window.testHelpers.waitFor(() => {
           const rec = window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id);
           return !!rec && rec.selectedCandidateType === pairs[i][0];
-        }, 3000);
+        }, 8000);
       }
       return id;
     });
@@ -179,7 +182,7 @@ test.describe('Heuristic anomaly flags', () => {
         return !!rec && rec.flags.some((f) => f.startsWith('candidate_type_flipped_'));
       },
       connectionIdA,
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     const recA = snap.connections.find((c) => c.id === connectionIdA);

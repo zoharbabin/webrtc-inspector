@@ -7,13 +7,17 @@ window.testHelpers = {
     return new Promise((resolve) => setTimeout(resolve, ms));
   },
 
+  // Throws on timeout. Returning false instead would let any caller that
+  // ignores the result pass on a condition that never became true, which is
+  // exactly the kind of test that hides a regression. Use wait() plus a direct
+  // assertion to check that something does NOT happen.
   async waitFor(fn, timeoutMs = 2000, intervalMs = 20) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       if (await fn()) return true;
       await this.wait(intervalMs);
     }
-    return false;
+    throw new Error(`testHelpers.waitFor timed out after ${timeoutMs}ms: ${String(fn).slice(0, 200)}`);
   },
 
   // Opens pcA/pcB with a data channel negotiated end to end and stashes both

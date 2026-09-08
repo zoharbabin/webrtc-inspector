@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { gotoFixture } = require('../helpers');
+const { gotoFixture, STATS_POLL_WAIT_MS } = require('../helpers');
 
 // Headless Chromium's fake audio device doesn't reliably produce real
 // inbound-rtp audio packets for a synthetic loopback session, so — as with
@@ -24,7 +24,7 @@ test.describe('Audio/video sync delta', () => {
     await page.waitForFunction(
       (id) => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).avSyncDeltaMs !== null,
       connectionIdA,
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     const recA = snap.connections.find((c) => c.id === connectionIdA);
@@ -56,7 +56,7 @@ test.describe('Audio/video sync delta', () => {
     await page.waitForFunction(
       (id) => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).avSyncDeltaMs > 5,
       connectionIdA,
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     await page.evaluate(() => {
       window.__pcA.getStats = async () => new Map([
@@ -67,7 +67,7 @@ test.describe('Audio/video sync delta', () => {
     await page.waitForFunction(
       (id) => window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === id).avSyncDeltaMs === 0,
       connectionIdA,
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
   });
 });

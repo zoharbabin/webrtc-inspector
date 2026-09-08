@@ -52,23 +52,32 @@ test.describe('setMediaFaultInjector() / clearMediaFaultInjector()', () => {
       await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
       const { connectionIdA, connectionIdB } = await window.testHelpers.createLoopbackSession('mfi', eval(addVideoSrc));
       const find = (direction) => window.__reports.find((r) => r.direction === direction && r.kind === 'video');
-      const ok = await window.testHelpers.waitFor(() => find('outgoing') && find('incoming'), 5000);
+      await window.testHelpers.waitFor(() => find('outgoing') && find('incoming'), 5000); // throws if either direction never fires
       const out = find('outgoing');
       const inc = find('incoming');
       return {
-        ok,
         outConn: out && out.connectionId, outPayloadConn: out && out.payload.connId, outBytes: out && out.payload.bytes,
         incConn: inc && inc.connectionId,
         connectionIdA, connectionIdB,
         installed: window.__webrtcInspector.getEvents().events.filter((e) => e.type === 'media-transform-installed').map((e) => `${e.connectionId}:${e.direction}`),
+        // The receiver install has to be the first thing the 'track' handler
+        // does, because Chromium only accepts it synchronously in that handler:
+        // anything before it that throws (the audio meter can) would cost
+        // incoming coverage for the whole call. Pinned as event order.
+        installBeforeTrackReceived: (() => {
+          const evs = window.__webrtcInspector.getEvents().events;
+          const inc = evs.find((e) => e.type === 'media-transform-installed' && e.direction === 'incoming');
+          const recv = evs.find((e) => e.type === 'track-received' && e.connectionId === connectionIdB);
+          return !!inc && !!recv && inc.seq < recv.seq;
+        })(),
       };
     }, addVideo);
-    expect(result.ok).toBe(true);
     expect(result.outConn).toBe(result.connectionIdA);
     expect(result.outPayloadConn).toBe(result.connectionIdA);
     expect(result.outBytes).toBeGreaterThan(0);
     expect(result.incConn).toBe(result.connectionIdB);
     expect(result.installed).toEqual(expect.arrayContaining([`${result.connectionIdA}:outgoing`, `${result.connectionIdB}:incoming`]));
+    expect(result.installBeforeTrackReceived).toBe(true);
   });
 
   test('connId scoping: an injector scoped to a different connId never fires, but the connection is still covered', async ({ page }) => {
@@ -133,23 +142,43 @@ test.describe('setMediaFaultInjector() / clearMediaFaultInjector()', () => {
     expect(result).toBeGreaterThan(0);
   });
 
-  test("'duplicate' and {delayMs} actions don't stall the pipeline — connection stays connected and fn keeps firing", async ({ page }) => {
+  // A uniform {delayMs} shifts the whole stream and stalls nothing, so packets
+  // must keep flowing and the connection must stay up. Delaying only *some*
+  // frames reorders them and can wedge the receiver for seconds on Chromium and
+  // Firefox (README caveat), so that case is deliberately not asserted here.
+  test('a uniform {delayMs} on every frame keeps packets flowing', async ({ page }) => {
     const result = await page.evaluate(async (addVideoSrc) => {
       // Worker-side state lives on `self`, never on window: fn is self-contained.
       window.__webrtcInspector.setMediaFaultInjector(null, 'video', (direction, frame, meta, report) => {
         if (direction !== 'outgoing') return undefined;
         self.__n = (self.__n || 0) + 1;
         report(self.__n);
-        return self.__n % 2 === 0 ? 'duplicate' : { delayMs: 50 };
+        return { delayMs: 50 };
       });
       await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
-      const { connectionIdA } = await window.testHelpers.createLoopbackSession('mfi-dup-delay', eval(addVideoSrc));
+      const { connectionIdA } = await window.testHelpers.createLoopbackSession('mfi-delay', eval(addVideoSrc));
       await window.testHelpers.waitFor(() => window.__reports.length >= 5, 5000);
+      const packets = async () => {
+        const stats = await window.__pcA.getStats();
+        let n = 0;
+        stats.forEach((s) => { if (s.type === 'outbound-rtp' && s.kind === 'video') n += s.packetsSent || 0; });
+        return n;
+      };
+      const p0 = await packets();
+      await window.testHelpers.wait(800);
+      const delta = (await packets()) - p0;
       const conn = window.__webrtcInspector.getSnapshot().connections.find((c) => c.id === connectionIdA);
-      return { calls: window.__reports.length, state: conn.state.connectionState };
+      return {
+        calls: window.__reports.length,
+        delta,
+        state: conn.state.connectionState,
+        errors: window.__errors.map((e) => `${e.stage}: ${e.message}`),
+      };
     }, addVideo);
     expect(result.calls).toBeGreaterThanOrEqual(5);
-    expect(result.state).not.toBe('failed');
+    expect(result.errors).toEqual([]);
+    expect(result.delta).toBeGreaterThan(0); // delayed frames still reach the wire
+    expect(result.state).toBe('connected');
   });
 
   test('clearMediaFaultInjector stops further invocations', async ({ page }) => {

@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { gotoFixture } = require('../helpers');
+const { gotoFixture, STATS_POLL_WAIT_MS } = require('../helpers');
 
 // As with the candidate-flip/av-sync suites, getStats() is overridden on the
 // live pc instance so freezeCount/totalFreezesDuration can be fed
@@ -38,7 +38,7 @@ test.describe('Freeze ratio / quality flag', () => {
         return !!t && t.qualityFlag !== null;
       },
       { id: connectionIdB, tid: trackId },
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     const track = snap.connections.find((c) => c.id === connectionIdB).remoteTracks.find((t) => t.trackId === trackId);
@@ -64,7 +64,7 @@ test.describe('Freeze ratio / quality flag', () => {
         return !!t && t.qualityFlag !== null;
       },
       { id: connectionIdB, tid: trackId },
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     const track = snap.connections.find((c) => c.id === connectionIdB).remoteTracks.find((t) => t.trackId === trackId);
@@ -90,7 +90,7 @@ test.describe('Freeze ratio / quality flag', () => {
         return !!t && t.qualityFlag !== null;
       },
       { id: connectionIdB, tid: trackId },
-      { timeout: 3000 }
+      { timeout: STATS_POLL_WAIT_MS }
     );
     const snap = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
     const track = snap.connections.find((c) => c.id === connectionIdB).remoteTracks.find((t) => t.trackId === trackId);

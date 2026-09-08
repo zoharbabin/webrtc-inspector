@@ -184,6 +184,16 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+// A remote audio level of null is not "silent" — it means the meter could not
+// read the track (in Chromium, nothing in the page is rendering it, so the
+// decoder never runs). Show the reason rather than an empty cell, or a developer
+// reads missing audio as broken audio.
+function remoteLevelLabel(track) {
+  if (typeof track.level === 'number') return ` (level ${track.level.toFixed(2)})`;
+  if (track.levelUnavailableReason) return ` (level n/a: ${track.levelUnavailableReason})`;
+  return '';
+}
+
 function renderSnapshot(snap) {
   const el = document.getElementById('connections');
   const status = document.getElementById('status');
@@ -201,6 +211,7 @@ function renderSnapshot(snap) {
     chip('fake cam', snap.fakeCamActive, 'armed', 'not set'),
     chip('dc interceptor', snap.dataChannelInterceptorActive, 'ON', 'off'),
     chip('ws interceptor', snap.webSocketInterceptorActive, 'ON', 'off'),
+    chip('outage', (snap.activeOutages || []).length > 0, (snap.activeOutages || []).join(', '), 'none'),
   ].join('');
 
   const filter = parseFilterQuery(filterQuery);
@@ -223,7 +234,7 @@ function renderSnapshot(snap) {
       ${renderSparklines(c.id, c.latestStats)}
       <table>
         <tr><th>Local tracks</th><td>${c.localTracks.map((t) => `${t.kind}${t.sourceTag ? ` <span class="badge">${t.sourceTag}</span>` : ''}${t.status === 'ended' ? ` <span class="badge failed">ended</span>` : ''}`).join(', ') || '—'}</td></tr>
-        <tr><th>Remote tracks</th><td>${c.remoteTracks.map((t) => `${t.kind}${typeof t.level === 'number' ? ` (level ${t.level.toFixed(2)})` : ''}`).join(', ') || '—'}</td></tr>
+        <tr><th>Remote tracks</th><td>${c.remoteTracks.map((t) => `${t.kind}${remoteLevelLabel(t)}`).join(', ') || '—'}</td></tr>
         <tr><th>Data channels</th><td>${c.dataChannels.map((d) => `
           <div>${escapeHtml(d.label)} (${escapeHtml(d.origin)}, ${d.messageCount} msgs)
             ${(d.lastMessages || []).map((m) => `<div class="msg-row">${messageCopyRow(m)}</div>`).join('')}
