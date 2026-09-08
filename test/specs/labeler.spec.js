@@ -76,6 +76,47 @@ test.describe('setLabeler()', () => {
     expect(snap.labelerActive).toBe(false);
   });
 
+  // Real discrepancy found while validating against a real LiveKit session
+  // (~/Downloads/webrtc-inspector-livekit-e2e-plan.md section 8): LiveKit
+  // fetches its TURN server list from its own signaling and applies it to
+  // the already-constructed publisher PC via pc.setConfiguration(), never at
+  // the RTCPeerConnection constructor. record.configuration used to stay
+  // frozen at whatever was passed to the constructor forever, so a
+  // connection's real, current ICE servers were invisible to setLabeler's
+  // URL matching. No SFU is needed to reproduce this — any app that calls
+  // setConfiguration() after construction hits the same gap — so it's
+  // reproduced here as a plain loopback case, distilled from the real
+  // LiveKit finding in test/livekit/specs/codec-negotiation.spec.js.
+  test('setConfiguration() after construction is picked up by the labeler, not just the constructor-time config', async ({ page }) => {
+    await gotoFixture(page);
+    const connectionId = await page.evaluate(() => {
+      window.__webrtcInspector.setLabeler((meta) => {
+        if (meta.kind === 'connection' && meta.urls.some((u) => u.includes('acme-turn'))) return 'Acme prod';
+        return null;
+      });
+      let id;
+      const unsubscribe = window.__webrtcInspector.onEvent((entry) => { if (entry.type === 'pc-created') id = entry.connectionId; });
+      window.__pcLate = new RTCPeerConnection();
+      unsubscribe();
+      return id;
+    });
+
+    // Before setConfiguration(), the labeler has nothing to match.
+    const before = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
+    expect(before.connections.find((c) => c.id === connectionId).label).toBeNull();
+
+    await page.evaluate(() => {
+      window.__pcLate.setConfiguration({ iceServers: [{ urls: 'turn:acme-turn.example.com:3478', username: 'u', credential: 'p' }] });
+    });
+
+    const after = await page.evaluate(() => window.__webrtcInspector.getSnapshot());
+    expect(after.connections.find((c) => c.id === connectionId).label).toBe('Acme prod');
+
+    const dump = await page.evaluate(() => window.__webrtcInspector.exportWebrtcInternalsDump());
+    const dumpUrls = dump.PeerConnections[String(connectionId)].rtcConfiguration.iceServers[0].urls;
+    expect([].concat(dumpUrls)).toContain('turn:acme-turn.example.com:3478');
+  });
+
   test('getSnapshotDiff reports a label change', async ({ page }) => {
     await gotoFixture(page);
     const { before, connectionIdA } = await page.evaluate(async () => {
