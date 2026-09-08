@@ -191,6 +191,7 @@
     unpublishScreenShare,
     disconnect,
     assertSimulcastNegotiated,
+    rawPublisherPc,
     getConnectionState,
     getEvents,
     getRemoteTracksByParticipant,

@@ -5,9 +5,29 @@
 // retries/timeouts in step 5 once local runs establish real timing.
 const { defineConfig, devices } = require('@playwright/test');
 
+const isCI = !!process.env.CI;
+
 module.exports = defineConfig({
   testDir: 'test/livekit/specs',
   fullyParallel: false,
+  // Every spec file shares one real livekit-server process (globalSetup owns
+  // it) and one control-server port. server-outage-recovery.spec.js kills
+  // and respawns that process outright, which would break any other spec
+  // file running concurrently in a second worker — so this suite never runs
+  // more than one spec file at a time.
+  workers: 1,
+  // Matches playwright.config.js's pattern: livekit-nightly.yml's "Write step
+  // summary" and "Upload HTML report" steps need test-results/results.json
+  // and playwright-report/ to exist, which the built-in default reporter
+  // never writes to disk.
+  reporter: isCI
+    ? [
+        ['list'],
+        ['html', { outputFolder: 'playwright-report', open: 'never' }],
+        ['json', { outputFile: 'test-results/results.json' }],
+        ['github'],
+      ]
+    : [['list'], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
   globalSetup: require.resolve('./test/livekit/global-setup.js'),
   use: {
     trace: 'retain-on-failure',

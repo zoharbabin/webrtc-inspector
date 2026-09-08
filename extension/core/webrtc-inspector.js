@@ -714,12 +714,17 @@ self.onrtctransform = (ev) => {
     };
   }
 
-  function logLocalTrack(record, track) {
+  function addLocalTrackRecord(record, track) {
     const tag = trackTagById.get(track);
     const trackRecord = { trackId: track.id, kind: track.kind, label: track.label, sourceTag: tag ? tag.tag : null, status: 'live', level: null, qualityLimitationReason: null, addedAt: Date.now() };
     record.localTracks.push(trackRecord);
     attachTrackLifecycle(record, trackRecord, track, 'local');
-    emit({ type: 'track-added', connectionId: record.id, kind: track.kind, trackId: track.id, sourceTag: tag ? tag.tag : null });
+    return trackRecord;
+  }
+
+  function logLocalTrack(record, track) {
+    const trackRecord = addLocalTrackRecord(record, track);
+    emit({ type: 'track-added', connectionId: record.id, kind: track.kind, trackId: track.id, sourceTag: trackRecord.sourceTag });
   }
 
   const originalAddTrack = OriginalRTCPeerConnection.prototype.addTrack;
@@ -830,18 +835,32 @@ self.onrtctransform = (ev) => {
     window.RTCRtpSender.prototype.replaceTrack = function (newTrack) {
       const tag = newTrack ? trackTagById.get(newTrack) : null;
       const sender = this;
+      const prevTrack = sender.track;
       // Emit only once the native call has actually settled — a rejected
       // replaceTrack() (closed sender, invalid track) must not be logged as
       // done, and a caller reading the event log as its only record of what
       // happened (the MCP path) needs the failure to be visible too.
       return OriginalRTCRtpSenderReplaceTrack.call(sender, newTrack).then((res) => {
         emit({ type: 'track-replaced', kind: newTrack ? newTrack.kind : null, trackId: newTrack ? newTrack.id : null, sourceTag: tag ? tag.tag : null });
+        // record.localTracks otherwise keeps listing the pre-swap track
+        // forever — logLocalTrack() is the only place that populates it, and
+        // it's never called for a replaceTrack() swap. Without this,
+        // getTrackDiagnostics()/computeAnomalyFlags() can never resolve the
+        // new track's id.
+        const record = recordForSender(sender);
+        if (record) {
+          if (prevTrack) {
+            const idx = record.localTracks.findIndex((t) => t.trackId === prevTrack.id);
+            if (idx !== -1) record.localTracks.splice(idx, 1);
+          }
+          if (newTrack) addLocalTrackRecord(record, newTrack);
+        }
         // The app's choice wins: drop any restore we still owe this sender, then
         // keep the new track dark for the rest of the outage. An app that clears
         // the track mid-outage gets no track back when the outage lifts.
         if (mediaBlackout) {
           forgetBlackedOutSender(sender);
-          if (newTrack) blackOutSender(recordForSender(sender), sender);
+          if (newTrack) blackOutSender(record, sender);
         }
         return res;
       }, (err) => {
@@ -1280,6 +1299,13 @@ self.onrtctransform = (ev) => {
   function markConnectionClosed(record, reason) {
     if (record.closed) return;
     record.closed = true;
+    // pc.close() sets connectionState (and possibly iceConnectionState)
+    // synchronously per spec even on the Chrome path that never fires the
+    // corresponding change event (see the close()-patch comment above) —
+    // resync from the live getters here so a closed record's cached state
+    // can't stay stuck at whatever it was the instant before closing.
+    record.state.connectionState = record.pc.connectionState;
+    record.state.iceConnectionState = record.pc.iceConnectionState;
     stopStatsPolling(record);
     (record.__levelMeterStops || []).forEach((stop) => stop());
     record.__levelMeterStops = [];

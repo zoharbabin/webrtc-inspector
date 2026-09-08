@@ -115,6 +115,8 @@ module.exports = [
         self: 'readonly', // media-fault injector fns run inside the transform worker
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
         fetch: 'readonly',
         XMLHttpRequest: 'readonly',
         Event: 'readonly',
