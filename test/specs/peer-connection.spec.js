@@ -204,4 +204,28 @@ test.describe('RTCPeerConnection instrumentation', () => {
       pcName: true,
     });
   });
+
+  // A page that churns connections (reconnect loops, per-call sessions) used to
+  // grow connectionsById forever, pinning every closed RTCPeerConnection and its
+  // tracks/dataChannels/statsHistory for the life of the tab. Eviction drops
+  // closed records oldest first and never touches a live one — mirrors
+  // evictClosedSockets()'s websocket.spec.js test.
+  test('evicts closed connection records but keeps a live connection addressable', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const { connectionIdA: keeperId } = await window.testHelpers.createLoopbackSession();
+      for (let i = 0; i < 150; i++) {
+        const churn = new RTCPeerConnection({ iceServers: [] });
+        churn.close();
+      }
+      const snap = window.__webrtcInspector.getSnapshot();
+      return {
+        connectionCount: snap.connections.length,
+        keeperStillTracked: snap.connections.some((c) => c.id === keeperId),
+        keeperClosed: snap.connections.find((c) => c.id === keeperId).closed,
+      };
+    });
+    expect(result.connectionCount).toBeLessThanOrEqual(100);
+    expect(result.keeperStillTracked).toBe(true);
+    expect(result.keeperClosed).toBe(false);
+  });
 });

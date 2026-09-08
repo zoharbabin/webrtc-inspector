@@ -73,4 +73,19 @@ test.describe('RTCDataChannel instrumentation', () => {
     await page.waitForFunction(() => window.__dcBMessages.length >= 1);
     expect(await page.evaluate(() => window.__dcBMessages[0])).toBe('passes through');
   });
+
+  // A long-lived data channel that sends/receives constantly (a chat channel,
+  // a game's input channel) used to grow dcRecord.messages forever — the same
+  // leak the WebSocket record's 200-message cap already guards against.
+  test('caps a data channel\'s stored messages at 200, oldest first', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      for (let i = 0; i < 220; i++) window.__dcA.send(`msg-${i}`);
+      await window.testHelpers.waitFor(() => window.__dcBMessages.length >= 220);
+      const snap = window.__webrtcInspector.getSnapshot();
+      const dcA = snap.connections[0].dataChannels[0];
+      return { messageCount: dcA.messageCount, lastMessages: dcA.lastMessages.map((m) => m.preview) };
+    });
+    expect(result.messageCount).toBe(200);
+    expect(result.lastMessages).toEqual(['msg-210', 'msg-211', 'msg-212', 'msg-213', 'msg-214', 'msg-215', 'msg-216', 'msg-217', 'msg-218', 'msg-219']);
+  });
 });

@@ -30,7 +30,7 @@
     return;
   }
 
-  const config = { statsIntervalMs: 2000, maxLogEntries: 5000, maxStatsHistory: 60, levelIntervalMs: 250, maxDecodedPreviewChars: 500, maxHttpHistory: 200, maxSocketHistory: 100 };
+  const config = { statsIntervalMs: 2000, maxLogEntries: 5000, maxStatsHistory: 60, levelIntervalMs: 250, maxDecodedPreviewChars: 500, maxHttpHistory: 200, maxSocketHistory: 100, maxConnectionHistory: 100 };
   // Thresholds for getSnapshot()'s heuristic anomaly flags (see #25) — each is
   // "how long a suspicious-looking state has to persist before it's worth
   // flagging", tuned low enough to keep loopback tests fast.
@@ -325,6 +325,7 @@
       pc,
     };
     connectionsById.set(id, record);
+    evictClosedConnections();
     recordByPc.set(pc, record);
     emit({ type: 'pc-created', connectionId: id, configuration });
 
@@ -888,6 +889,7 @@ self.onrtctransform = (ev) => {
       }
       const messageRecord = { dir: 'in', ts: Date.now(), preview: preview(data) };
       dcRecord.messages.push(messageRecord);
+      if (dcRecord.messages.length > 200) dcRecord.messages.shift();
       emit({ type: 'datachannel-message', connectionId: record.id, label: channel.label, dir: 'in', preview: preview(data) });
       attachDecodeResult(
         runDecoders({ kind: 'datachannel', connectionId: record.id, label: channel.label, dir: 'in' }, data),
@@ -916,6 +918,7 @@ self.onrtctransform = (ev) => {
         }
         const messageRecord = { dir: 'out', ts: Date.now(), preview: preview(payload) };
         dcRecord.messages.push(messageRecord);
+        if (dcRecord.messages.length > 200) dcRecord.messages.shift();
         emit({ type: 'datachannel-message', connectionId: record.id, label: channel.label, dir: 'out', preview: preview(payload) });
         attachDecodeResult(
           runDecoders({ kind: 'datachannel', connectionId: record.id, label: channel.label, dir: 'out' }, payload),
@@ -1252,6 +1255,22 @@ self.onrtctransform = (ev) => {
   }
   function stopStatsPolling(record) {
     if (record.__statsTimer) clearInterval(record.__statsTimer);
+  }
+
+  // Each connection record pins the RTCPeerConnection plus its tracks, data
+  // channels and stats history — on a page that churns connections (reconnect
+  // loops, per-call sessions) an unbounded map is a leak that grows for as
+  // long as the tab lives. Only already-closed records are dropped, oldest
+  // first, mirroring evictClosedSockets(): a live connection stays
+  // addressable by id no matter how many connections the page has opened,
+  // and a connection that just closed is still visible right after (only the
+  // *oldest* closed ones are evicted, and only once the cap is exceeded).
+  function evictClosedConnections() {
+    if (connectionsById.size <= config.maxConnectionHistory) return;
+    for (const [id, record] of connectionsById) {
+      if (connectionsById.size <= config.maxConnectionHistory) break;
+      if (record.closed) connectionsById.delete(id);
+    }
   }
 
   // Every path that ends a connection funnels through here, because a record
