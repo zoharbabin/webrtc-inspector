@@ -16,12 +16,20 @@ function errorResult(err) {
   return { content: [{ type: 'text', text: err && err.message ? err.message : String(err) }], isError: true };
 }
 
+// Every tool takes this: when more than one page has webrtc-inspector
+// loaded, getPage() refuses to guess which one to act on (see mcp/browser.js)
+// — pass an exact URL, or a distinguishing substring of one, to say which.
+const PAGE_URL_FIELD = {
+  pageUrl: z.string().optional().describe(
+    'Disambiguates which instrumented page to act on when more than one exists (exact URL, or a distinguishing substring). Omit when only one exists.'
+  ),
+};
+
 function registerSimpleTool(server, cdpEndpoint, name, description, inputSchema, method, toArgs) {
-  const config = { description };
-  if (inputSchema) config.inputSchema = inputSchema;
+  const config = { description, inputSchema: { ...(inputSchema || {}), ...PAGE_URL_FIELD } };
   server.registerTool(name, config, async (input) => {
     try {
-      const page = await getPage(cdpEndpoint);
+      const page = await getPage(cdpEndpoint, input.pageUrl);
       const args = toArgs ? toArgs(input) : [];
       const result = await page.evaluate(([m, a]) => window.__webrtcInspector[m](...a), [method, args]);
       return textResult(result);
@@ -51,12 +59,13 @@ function registerTools(server, cdpEndpoint) {
     'wrtc_navigate',
     {
       description:
-        'Navigate the current page (self-launched or attached browser) to url, creating and pre-instrumenting a page first if none exists yet.',
-      inputSchema: { url: z.string() },
+        'Navigate a page (self-launched or attached browser) to url, creating and pre-instrumenting one first if none exists yet. ' +
+        'If more than one instrumented page already exists, pass pageUrl to say which one to navigate.',
+      inputSchema: { url: z.string(), ...PAGE_URL_FIELD },
     },
-    async ({ url }) => {
+    async ({ url, pageUrl }) => {
       try {
-        await navigate(cdpEndpoint, url);
+        await navigate(cdpEndpoint, url, pageUrl);
         return textResult({ navigated: true, url });
       } catch (err) {
         return errorResult(err);
@@ -271,11 +280,12 @@ function registerTools(server, cdpEndpoint) {
       inputSchema: {
         durationMs: z.number(),
         targets: z.array(z.enum(['websocket', 'datachannel', 'media', 'http'])).optional(),
+        ...PAGE_URL_FIELD,
       },
     },
-    async ({ durationMs, targets }) => {
+    async ({ durationMs, targets, pageUrl }) => {
       try {
-        const page = await getPage(cdpEndpoint);
+        const page = await getPage(cdpEndpoint, pageUrl);
         await page.evaluate(
           async ([d, t]) => {
             const loss = window.__webrtcInspector.simulateNetworkLoss(d, t ? { targets: t } : undefined);
@@ -312,11 +322,11 @@ function registerTools(server, cdpEndpoint) {
     {
       description:
         "Run a named network-impairment preset ('home-wifi', '4g-train', 'congested-mobile', or one registered via wrtc_register_network_preset). Awaits completion — no early-stop handle over MCP.",
-      inputSchema: { name: z.string() },
+      inputSchema: { name: z.string(), ...PAGE_URL_FIELD },
     },
-    async ({ name }) => {
+    async ({ name, pageUrl }) => {
       try {
-        const page = await getPage(cdpEndpoint);
+        const page = await getPage(cdpEndpoint, pageUrl);
         await page.evaluate(async (n) => {
           const run = window.__webrtcInspector.simulateNetworkPreset(n);
           await run.done;
