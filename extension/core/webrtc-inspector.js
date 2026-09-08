@@ -831,6 +831,23 @@ self.onrtctransform = (ev) => {
     return channel;
   };
 
+  // Apps (and SDKs like LiveKit, which fetches TURN credentials from its own
+  // signaling after the PC already exists) commonly push ICE servers in via
+  // setConfiguration() rather than the constructor. Without this,
+  // record.configuration stays frozen at whatever was passed at construction
+  // time forever, so setLabeler's connection-kind URL matching and
+  // exportWebrtcInternalsDump()'s rtcConfiguration field could never see a
+  // server's real, current ICE servers on such a connection.
+  const originalSetConfiguration = OriginalRTCPeerConnection.prototype.setConfiguration;
+  OriginalRTCPeerConnection.prototype.setConfiguration = function (configuration) {
+    const result = originalSetConfiguration.apply(this, [configuration]);
+    const record = recordByPc.get(this);
+    // getConfiguration() reflects the browser's actual merged/validated
+    // config, not just the (possibly partial) argument just passed in.
+    if (record) record.configuration = this.getConfiguration();
+    return result;
+  };
+
   if (OriginalRTCRtpSenderReplaceTrack) {
     window.RTCRtpSender.prototype.replaceTrack = function (newTrack) {
       const tag = newTrack ? trackTagById.get(newTrack) : null;
