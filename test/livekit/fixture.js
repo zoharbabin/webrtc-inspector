@@ -35,7 +35,7 @@
     };
   }
 
-  async function join(url, token, opts) {
+  async function join(url, token, opts, connectOptions) {
     if (room) await disconnect();
     events.length = 0;
     room = new Room(buildRoomOptions(opts || {}));
@@ -53,7 +53,10 @@
     ].filter(Boolean).forEach((evt) => {
       room.on(evt, (...args) => logEvent(evt, args.length ? String(args[0]) : undefined));
     });
-    await room.connect(url, token);
+    // rtcConfig (e.g. forcing iceTransportPolicy: 'relay') is a
+    // RoomConnectOptions field, not a RoomOptions field — it must go here,
+    // not into the Room constructor, or it's silently ignored.
+    await room.connect(url, token, connectOptions);
     window.__lkRoom = room;
     return {
       sid: await room.getSid(),
