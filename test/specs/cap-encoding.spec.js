@@ -127,6 +127,29 @@ test.describe('capEncoding()', () => {
     expect(result.eventTypes).not.toContain('encoding-capped');
   });
 
+  // getParameters()/setParameters() share a hidden per-sender transaction id
+  // that the browser bumps on every getParameters() call and validates on
+  // setParameters() — without serializing per sender, the second of two
+  // concurrent capEncoding() calls on the same sender rejects with
+  // InvalidStateError, even though both calls are individually valid.
+  test('two concurrent calls on the same sender both apply instead of one racing to a rejection', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
+      const { connectionIdA } = await window.testHelpers.createLoopbackSession('cap-race', async (pcA) => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach((t) => pcA.addTrack(t, stream));
+      });
+      const p1 = window.__webrtcInspector.capEncoding(connectionIdA, 'video', { maxBitrate: 100000 });
+      const p2 = window.__webrtcInspector.capEncoding(connectionIdA, 'video', { maxFramerate: 12 });
+      const settled = await Promise.allSettled([p1, p2]);
+      const sender = window.__pcA.getSenders().find((s) => s.track && s.track.kind === 'video');
+      return { statuses: settled.map((s) => s.status), encoding: sender.getParameters().encodings[0] };
+    });
+    expect(result.statuses).toEqual(['fulfilled', 'fulfilled']);
+    expect(result.encoding.maxBitrate).toBe(100000);
+    expect(result.encoding.maxFramerate).toBe(12);
+  });
+
   test('a capped bitrate keeps the connection healthy — real packets still flow', async ({ page }) => {
     const result = await page.evaluate(async () => {
       await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });

@@ -1915,6 +1915,19 @@ self.onrtctransform = (ev) => {
     return sender.replaceTrack(track);
   }
 
+  // getParameters()/setParameters() share a hidden per-sender transaction id
+  // that the browser bumps on every getParameters() call and validates on
+  // setParameters() — two concurrent capEncoding() calls on the same sender
+  // race on that id. Whichever setParameters() lands second was built from a
+  // getParameters() snapshot that's no longer the latest, and the browser
+  // rejects it with InvalidStateError even though both calls were
+  // individually valid (reproduced on Chromium: the second of two
+  // back-to-back capEncoding() calls on the same sender rejects with
+  // "Failed to set parameters since getParameters() has never been called on
+  // this sender"). Queuing per sender makes concurrent calls apply one after
+  // another instead of racing.
+  const capEncodingQueueBySender = new WeakMap();
+
   // Standard WebRTC pattern: read current encoding params, mutate, write
   // back via setParameters() — no interception needed, real congestion
   // control still runs but is capped by whatever's passed here. Only the
@@ -1924,24 +1937,30 @@ self.onrtctransform = (ev) => {
     if (!record) throw new Error(`No connection with id ${connectionId}`);
     const sender = record.pc.getSenders().find((s) => s.track && s.track.kind === kind);
     if (!sender) throw new Error(`No active ${kind} sender on connection ${connectionId}`);
-    const params = sender.getParameters();
-    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-    params.encodings.forEach((encoding) => {
-      if ('maxBitrate' in caps) encoding.maxBitrate = caps.maxBitrate;
-      if ('maxFramerate' in caps) encoding.maxFramerate = caps.maxFramerate;
-      if ('scaleResolutionDownBy' in caps) encoding.scaleResolutionDownBy = caps.scaleResolutionDownBy;
-    });
-    if ('degradationPreference' in caps) params.degradationPreference = caps.degradationPreference;
-    // Without this, a wrtc_cap_encoding call is invisible in the event log —
-    // an agent reading the log to explain a bitrate drop has nothing that
-    // points at the cap that caused it.
-    return sender.setParameters(params).then((res) => {
-      emit({ type: 'encoding-capped', connectionId, kind, caps });
-      return res;
-    }, (err) => {
-      emit({ type: 'encoding-cap-failed', connectionId, kind, caps, error: String((err && err.message) || err) });
-      throw err;
-    });
+    const run = () => {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+      params.encodings.forEach((encoding) => {
+        if ('maxBitrate' in caps) encoding.maxBitrate = caps.maxBitrate;
+        if ('maxFramerate' in caps) encoding.maxFramerate = caps.maxFramerate;
+        if ('scaleResolutionDownBy' in caps) encoding.scaleResolutionDownBy = caps.scaleResolutionDownBy;
+      });
+      if ('degradationPreference' in caps) params.degradationPreference = caps.degradationPreference;
+      // Without this, a wrtc_cap_encoding call is invisible in the event log —
+      // an agent reading the log to explain a bitrate drop has nothing that
+      // points at the cap that caused it.
+      return sender.setParameters(params).then((res) => {
+        emit({ type: 'encoding-capped', connectionId, kind, caps });
+        return res;
+      }, (err) => {
+        emit({ type: 'encoding-cap-failed', connectionId, kind, caps, error: String((err && err.message) || err) });
+        throw err;
+      });
+    };
+    const prev = capEncodingQueueBySender.get(sender) || Promise.resolve();
+    const next = prev.then(run, run);
+    capEncodingQueueBySender.set(sender, next);
+    return next;
   }
 
   function injectDataChannelMessage(connectionId, label, data) {
