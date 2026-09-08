@@ -56,14 +56,25 @@ test.describe('compileScenario()', () => {
     ]);
   });
 
-  test('compiles kill/restart-ice with the given connectionId, warning when none is given', () => {
+  test('compiles kill/restart-ice with the given connectionId', () => {
     expect(compileScenario('kill the connection', { connectionId: 7 })).toEqual({
       steps: [{ primitive: 'killConnection', args: [7] }],
       warnings: [],
     });
+  });
+
+  test('with no connectionId in context, kill/restart-ice compile to no step at all, not a step doomed to throw', () => {
     const noCtx = compileScenario('restart ice on the connection');
-    expect(noCtx.steps).toEqual([{ primitive: 'restartIce', args: [null] }]);
+    expect(noCtx.steps).toEqual([]);
     expect(noCtx.warnings[0]).toMatch(/no connectionId/);
+
+    const compound = compileScenario('drop packets for 3s then kill the connection');
+    // The duration clause still compiles fine on its own — one clause missing
+    // a connectionId doesn't have to invalidate an otherwise-runnable scenario.
+    expect(compound.steps).toEqual([
+      { primitive: 'simulateNetworkLoss', args: [3000, { targets: ['media'] }] },
+    ]);
+    expect(compound.warnings[0]).toMatch(/no connectionId/);
   });
 
   test('compiles a compound "then" scenario into an ordered step sequence', () => {
@@ -129,6 +140,15 @@ test.describe('runCompiledScenario()', () => {
     const compiled = compileScenario('kill the connection', { connectionId: 1 });
     const { results } = await runCompiledScenario(compiled, api);
     expect(results[0].error).toBe('boom');
+  });
+
+  test('a scenario missing a required connectionId never reaches the api with a null id', async () => {
+    const calls = [];
+    const api = { killConnection: (...args) => { calls.push(args); return Promise.resolve(); } };
+    const compiled = compileScenario('kill the connection'); // no context: no connectionId
+    const { results } = await runCompiledScenario(compiled, api);
+    expect(calls).toEqual([]); // killConnection(null) never happened
+    expect(results).toEqual([]);
   });
 
   test('opts.bundle attaches api.exportBundle()\'s return value', async () => {

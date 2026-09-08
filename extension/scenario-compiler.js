@@ -61,20 +61,20 @@ function compileClause(clause, context) {
   const preset = PRESET_PATTERNS.find(({ re }) => re.test(clause));
   if (preset) return { step: { primitive: 'simulateNetworkPreset', args: [preset.name] } };
 
+  // A clause that needs a connectionId but has none in context must not
+  // compile to a step at all — args: [null] looked like a normal step but
+  // was guaranteed to throw the moment runCompiledScenario actually called
+  // it, and a caller that runs compiled.steps without first checking
+  // compiled.warnings (a plain array, easy to skip) would never see that
+  // coming until it was already mid-scenario.
   if (KILL_RE.test(clause)) {
-    const warning = context.connectionId == null ? 'killConnection: no connectionId in context; args[0] will be null' : null;
-    return {
-      step: { primitive: 'killConnection', args: [context.connectionId == null ? null : context.connectionId] },
-      warning,
-    };
+    if (context.connectionId == null) return { warning: `killConnection: no connectionId in context; "${clause}" was not compiled to a step` };
+    return { step: { primitive: 'killConnection', args: [context.connectionId] } };
   }
 
   if (RESTART_ICE_RE.test(clause)) {
-    const warning = context.connectionId == null ? 'restartIce: no connectionId in context; args[0] will be null' : null;
-    return {
-      step: { primitive: 'restartIce', args: [context.connectionId == null ? null : context.connectionId] },
-      warning,
-    };
+    if (context.connectionId == null) return { warning: `restartIce: no connectionId in context; "${clause}" was not compiled to a step` };
+    return { step: { primitive: 'restartIce', args: [context.connectionId] } };
   }
 
   const durationMs = parseDurationMs(clause);
