@@ -130,3 +130,25 @@ test.describe('setIceCandidateFilter()', () => {
     expect(otherConnected).toBe(true);
   });
 });
+
+test.describe('addIceCandidate() event ordering', () => {
+  test('a rejected addIceCandidate emits ice-candidate-remote-failed, not ice-candidate-remote', async ({ page }) => {
+    await gotoFixture(page);
+    const result = await page.evaluate(async () => {
+      await window.testHelpers.createLoopbackSession();
+      window.__pcA.close(); // a closed connection rejects addIceCandidate (InvalidStateError)
+      window.__events = [];
+      window.__webrtcInspector.onEvent((e) => window.__events.push(e));
+      let rejected = false;
+      try {
+        await window.__pcA.addIceCandidate({ candidate: 'candidate:1 1 UDP 2130706431 127.0.0.1 12345 typ host', sdpMid: '0' });
+      } catch (_) {
+        rejected = true;
+      }
+      return { rejected, eventTypes: window.__events.map((e) => e.type) };
+    });
+    expect(result.rejected).toBe(true);
+    expect(result.eventTypes).toContain('ice-candidate-remote-failed');
+    expect(result.eventTypes).not.toContain('ice-candidate-remote');
+  });
+});

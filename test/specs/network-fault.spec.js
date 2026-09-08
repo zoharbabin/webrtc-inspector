@@ -187,6 +187,31 @@ test.describe('Network-fault primitives', () => {
     expect(result.trackAfter).toBeNull();
   });
 
+  test('a rejected replaceTrack emits track-replace-failed, not track-replaced', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
+      await window.testHelpers.createLoopbackSession('track-replace-fail', async (pcA) => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach((t) => pcA.addTrack(t, stream));
+      });
+      const sender = window.__pcA.getSenders().find((s) => s.track && s.track.kind === 'video');
+      const replacement = sender.track.clone();
+      window.__events = [];
+      window.__webrtcInspector.onEvent((e) => window.__events.push(e));
+      window.__pcA.close(); // a closed connection's sender rejects replaceTrack (InvalidStateError)
+      let rejected = false;
+      try {
+        await sender.replaceTrack(replacement);
+      } catch (_) {
+        rejected = true;
+      }
+      return { rejected, eventTypes: window.__events.map((e) => e.type) };
+    });
+    expect(result.rejected).toBe(true);
+    expect(result.eventTypes).toContain('track-replace-failed');
+    expect(result.eventTypes).not.toContain('track-replaced');
+  });
+
   test("simulateNetworkLoss with targets: ['media'] blacks out a sender the app adds mid-outage", async ({ page, browserName }) => {
     const result = await page.evaluate(async () => {
       const packets = async () => {

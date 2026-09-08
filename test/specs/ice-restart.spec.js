@@ -46,4 +46,23 @@ test.describe('restartIce()', () => {
     });
     expect(threw).toBe(true);
   });
+
+  test('a closed connection emits ice-restart-failed, not ice-restart', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const { connectionIdA } = await window.testHelpers.createLoopbackSession();
+      window.__pcA.close();
+      window.__events = [];
+      window.__webrtcInspector.onEvent((e) => window.__events.push(e));
+      let threw = false;
+      try {
+        window.__webrtcInspector.restartIce(connectionIdA);
+      } catch (_) {
+        threw = true;
+      }
+      return { threw, eventTypes: window.__events.map((e) => e.type) };
+    });
+    expect(result.threw).toBe(true);
+    expect(result.eventTypes).toContain('ice-restart-failed');
+    expect(result.eventTypes).not.toContain('ice-restart');
+  });
 });

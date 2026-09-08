@@ -795,8 +795,16 @@ self.onrtctransform = (ev) => {
         emit({ type: 'ice-candidate-remote-dropped', connectionId: record.id, candidateType: type });
         return Promise.resolve();
       }
-      record.remoteCandidates.push({ ts: Date.now(), type, candidate: candStr });
-      emit({ type: 'ice-candidate-remote', connectionId: record.id, candidateType: type });
+      // addIceCandidate() can reject (bad SDP fragment, wrong signaling state) —
+      // emit only after it settles, so a rejected candidate isn't logged as added.
+      return originalAddIceCandidate.apply(this, [candidate]).then((res) => {
+        record.remoteCandidates.push({ ts: Date.now(), type, candidate: candStr });
+        emit({ type: 'ice-candidate-remote', connectionId: record.id, candidateType: type });
+        return res;
+      }, (err) => {
+        emit({ type: 'ice-candidate-remote-failed', connectionId: record.id, candidateType: type, error: String((err && err.message) || err) });
+        throw err;
+      });
     }
     return originalAddIceCandidate.apply(this, [candidate]);
   };
@@ -812,9 +820,13 @@ self.onrtctransform = (ev) => {
   if (OriginalRTCRtpSenderReplaceTrack) {
     window.RTCRtpSender.prototype.replaceTrack = function (newTrack) {
       const tag = newTrack ? trackTagById.get(newTrack) : null;
-      emit({ type: 'track-replaced', kind: newTrack ? newTrack.kind : null, trackId: newTrack ? newTrack.id : null, sourceTag: tag ? tag.tag : null });
       const sender = this;
+      // Emit only once the native call has actually settled — a rejected
+      // replaceTrack() (closed sender, invalid track) must not be logged as
+      // done, and a caller reading the event log as its only record of what
+      // happened (the MCP path) needs the failure to be visible too.
       return OriginalRTCRtpSenderReplaceTrack.call(sender, newTrack).then((res) => {
+        emit({ type: 'track-replaced', kind: newTrack ? newTrack.kind : null, trackId: newTrack ? newTrack.id : null, sourceTag: tag ? tag.tag : null });
         // The app's choice wins: drop any restore we still owe this sender, then
         // keep the new track dark for the rest of the outage. An app that clears
         // the track mid-outage gets no track back when the outage lifts.
@@ -823,6 +835,9 @@ self.onrtctransform = (ev) => {
           if (newTrack) blackOutSender(recordForSender(sender), sender);
         }
         return res;
+      }, (err) => {
+        emit({ type: 'track-replace-failed', kind: newTrack ? newTrack.kind : null, trackId: newTrack ? newTrack.id : null, error: String((err && err.message) || err) });
+        throw err;
       });
     };
   }
@@ -1631,52 +1646,65 @@ self.onrtctransform = (ev) => {
       const callId = nextGumCallId++;
       emit({ type: 'getUserMedia-called', callId, constraints });
 
-      const wantsAudio = !!(constraints && constraints.audio);
-      const wantsVideo = !!(constraints && constraints.video);
-      const useFakeAudio = wantsAudio && !!fakeMic;
-      const useFakeVideo = wantsVideo && !!fakeCam;
+      try {
+        const wantsAudio = !!(constraints && constraints.audio);
+        const wantsVideo = !!(constraints && constraints.video);
+        const useFakeAudio = wantsAudio && !!fakeMic;
+        const useFakeVideo = wantsVideo && !!fakeCam;
 
-      if (!useFakeAudio && !useFakeVideo) {
-        const stream = await OriginalGetUserMedia(constraints);
-        stream.getTracks().forEach((track) => trackTagById.set(track, { tag: 'real-device', sourceCallId: callId }));
-        emit({ type: 'getUserMedia-served-real', callId, trackIds: stream.getTracks().map((t) => t.id) });
+        if (!useFakeAudio && !useFakeVideo) {
+          const stream = await OriginalGetUserMedia(constraints);
+          stream.getTracks().forEach((track) => trackTagById.set(track, { tag: 'real-device', sourceCallId: callId }));
+          emit({ type: 'getUserMedia-served-real', callId, trackIds: stream.getTracks().map((t) => t.id) });
+          return stream;
+        }
+
+        const tracks = [];
+        if (wantsAudio) {
+          if (useFakeAudio) {
+            const t = fakeMic.dest.stream.getAudioTracks()[0].clone();
+            trackTagById.set(t, { tag: 'fake-mic', sourceCallId: fakeMic.callId });
+            tracks.push(t);
+          } else {
+            const real = await OriginalGetUserMedia({ audio: constraints.audio });
+            real.getAudioTracks().forEach((t) => { trackTagById.set(t, { tag: 'real-device', sourceCallId: callId }); tracks.push(t); });
+          }
+        }
+        if (wantsVideo) {
+          if (useFakeVideo) {
+            const t = fakeCam.stream.getVideoTracks()[0].clone();
+            trackTagById.set(t, { tag: 'fake-cam', sourceCallId: fakeCam.callId });
+            tracks.push(t);
+          } else {
+            const real = await OriginalGetUserMedia({ video: constraints.video });
+            real.getVideoTracks().forEach((t) => { trackTagById.set(t, { tag: 'real-device', sourceCallId: callId }); tracks.push(t); });
+          }
+        }
+        const stream = new MediaStream(tracks);
+        emit({ type: 'getUserMedia-served-mixed', callId, fakeAudio: useFakeAudio, fakeVideo: useFakeVideo, trackIds: tracks.map((t) => t.id) });
         return stream;
+      } catch (err) {
+        // Without this, a denied/failed getUserMedia() call is a dead end in the
+        // log: 'getUserMedia-called' with nothing after it, and no clue why no
+        // track ever showed up.
+        emit({ type: 'getUserMedia-failed', callId, error: String((err && err.message) || err) });
+        throw err;
       }
-
-      const tracks = [];
-      if (wantsAudio) {
-        if (useFakeAudio) {
-          const t = fakeMic.dest.stream.getAudioTracks()[0].clone();
-          trackTagById.set(t, { tag: 'fake-mic', sourceCallId: fakeMic.callId });
-          tracks.push(t);
-        } else {
-          const real = await OriginalGetUserMedia({ audio: constraints.audio });
-          real.getAudioTracks().forEach((t) => { trackTagById.set(t, { tag: 'real-device', sourceCallId: callId }); tracks.push(t); });
-        }
-      }
-      if (wantsVideo) {
-        if (useFakeVideo) {
-          const t = fakeCam.stream.getVideoTracks()[0].clone();
-          trackTagById.set(t, { tag: 'fake-cam', sourceCallId: fakeCam.callId });
-          tracks.push(t);
-        } else {
-          const real = await OriginalGetUserMedia({ video: constraints.video });
-          real.getVideoTracks().forEach((t) => { trackTagById.set(t, { tag: 'real-device', sourceCallId: callId }); tracks.push(t); });
-        }
-      }
-      const stream = new MediaStream(tracks);
-      emit({ type: 'getUserMedia-served-mixed', callId, fakeAudio: useFakeAudio, fakeVideo: useFakeVideo, trackIds: tracks.map((t) => t.id) });
-      return stream;
     };
   }
 
   if (OriginalGetDisplayMedia) {
     navigator.mediaDevices.getDisplayMedia = async function (constraints) {
       const callId = nextGumCallId++;
-      const stream = await OriginalGetDisplayMedia(constraints);
-      stream.getTracks().forEach((track) => trackTagById.set(track, { tag: 'display-capture', sourceCallId: callId }));
-      emit({ type: 'getDisplayMedia-served', callId, trackIds: stream.getTracks().map((t) => t.id) });
-      return stream;
+      try {
+        const stream = await OriginalGetDisplayMedia(constraints);
+        stream.getTracks().forEach((track) => trackTagById.set(track, { tag: 'display-capture', sourceCallId: callId }));
+        emit({ type: 'getDisplayMedia-served', callId, trackIds: stream.getTracks().map((t) => t.id) });
+        return stream;
+      } catch (err) {
+        emit({ type: 'getDisplayMedia-failed', callId, error: String((err && err.message) || err) });
+        throw err;
+      }
     };
   }
 
@@ -1705,8 +1733,17 @@ self.onrtctransform = (ev) => {
   function restartIce(connectionId) {
     const record = connectionsById.get(connectionId);
     if (!record) throw new Error(`No connection with id ${connectionId}`);
-    emit({ type: 'ice-restart', connectionId, iceConnectionState: record.pc.iceConnectionState, connectionState: record.pc.connectionState });
+    // Per spec, restartIce() on a closed connection silently aborts its own
+    // steps — no exception, nothing to catch after the fact. Check the
+    // record's own closed flag ourselves, so a request against a dead
+    // connection is reported as failed instead of logged as done.
+    if (record.closed) {
+      const err = new Error(`Connection ${connectionId} is closed`);
+      emit({ type: 'ice-restart-failed', connectionId, iceConnectionState: record.pc.iceConnectionState, connectionState: record.pc.connectionState, error: err.message });
+      throw err;
+    }
     record.pc.restartIce();
+    emit({ type: 'ice-restart', connectionId, iceConnectionState: record.pc.iceConnectionState, connectionState: record.pc.connectionState });
   }
 
   function simulateNetworkLoss(durationMs, options) {
@@ -1821,7 +1858,16 @@ self.onrtctransform = (ev) => {
       if ('scaleResolutionDownBy' in caps) encoding.scaleResolutionDownBy = caps.scaleResolutionDownBy;
     });
     if ('degradationPreference' in caps) params.degradationPreference = caps.degradationPreference;
-    return sender.setParameters(params);
+    // Without this, a wrtc_cap_encoding call is invisible in the event log —
+    // an agent reading the log to explain a bitrate drop has nothing that
+    // points at the cap that caused it.
+    return sender.setParameters(params).then((res) => {
+      emit({ type: 'encoding-capped', connectionId, kind, caps });
+      return res;
+    }, (err) => {
+      emit({ type: 'encoding-cap-failed', connectionId, kind, caps, error: String((err && err.message) || err) });
+      throw err;
+    });
   }
 
   function injectDataChannelMessage(connectionId, label, data) {

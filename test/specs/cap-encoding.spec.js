@@ -85,6 +85,48 @@ test.describe('capEncoding()', () => {
     expect(threw).toBe(true);
   });
 
+  test('emits encoding-capped only after setParameters resolves', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
+      const { connectionIdA } = await window.testHelpers.createLoopbackSession('cap-event', async (pcA) => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach((t) => pcA.addTrack(t, stream));
+      });
+      window.__events = [];
+      window.__webrtcInspector.onEvent((e) => window.__events.push(e));
+      await window.__webrtcInspector.capEncoding(connectionIdA, 'video', { maxBitrate: 100000 });
+      const evt = window.__events.find((e) => e.type === 'encoding-capped');
+      return { evt, connectionIdA };
+    });
+    expect(result.evt).toBeDefined();
+    expect(result.evt.connectionId).toBe(result.connectionIdA);
+    expect(result.evt.kind).toBe('video');
+    expect(result.evt.caps).toEqual({ maxBitrate: 100000 });
+  });
+
+  test('a rejected setParameters emits encoding-cap-failed, not encoding-capped', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
+      const { connectionIdA } = await window.testHelpers.createLoopbackSession('cap-fail', async (pcA) => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach((t) => pcA.addTrack(t, stream));
+      });
+      window.__pcA.close(); // a closed connection's sender rejects setParameters (InvalidStateError)
+      window.__events = [];
+      window.__webrtcInspector.onEvent((e) => window.__events.push(e));
+      let rejected = false;
+      try {
+        await window.__webrtcInspector.capEncoding(connectionIdA, 'video', { maxBitrate: 100000 });
+      } catch (_) {
+        rejected = true;
+      }
+      return { rejected, eventTypes: window.__events.map((e) => e.type) };
+    });
+    expect(result.rejected).toBe(true);
+    expect(result.eventTypes).toContain('encoding-cap-failed');
+    expect(result.eventTypes).not.toContain('encoding-capped');
+  });
+
   test('a capped bitrate keeps the connection healthy — real packets still flow', async ({ page }) => {
     const result = await page.evaluate(async () => {
       await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
