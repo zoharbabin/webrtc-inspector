@@ -233,14 +233,14 @@ function renderSnapshot(snap) {
       </div>
       ${renderSparklines(c.id, c.latestStats)}
       <table>
-        <tr><th>Local tracks</th><td>${c.localTracks.map((t) => `${t.kind}${t.sourceTag ? ` <span class="badge">${t.sourceTag}</span>` : ''}${t.status === 'ended' ? ` <span class="badge failed">ended</span>` : ''}`).join(', ') || '—'}</td></tr>
+        <tr><th>Local tracks</th><td>${c.localTracks.map((t) => `${escapeHtml(t.kind)}${t.sourceTag ? ` <span class="badge">${escapeHtml(t.sourceTag)}</span>` : ''}${t.status === 'ended' ? ` <span class="badge failed">ended</span>` : ''}`).join(', ') || '—'}</td></tr>
         <tr><th>Remote tracks</th><td>${c.remoteTracks.map((t) => `${t.kind}${remoteLevelLabel(t)}`).join(', ') || '—'}</td></tr>
         <tr><th>Data channels</th><td>${c.dataChannels.map((d) => `
           <div>${escapeHtml(d.label)} (${escapeHtml(d.origin)}, ${d.messageCount} msgs)
             ${(d.lastMessages || []).map((m) => `<div class="msg-row">${messageCopyRow(m)}</div>`).join('')}
           </div>`).join('') || '—'}</td></tr>
-        <tr><th>Local SDP</th><td>${c.localSdpSummary ? `${c.localSdpSummary.mLines} m-lines, codecs: ${c.localSdpSummary.codecs.join(', ')} <button class="copy-btn" data-copy-sdp="${c.id}:local">Copy</button>` : '—'}</td></tr>
-        <tr><th>Remote SDP</th><td>${c.remoteSdpSummary ? `${c.remoteSdpSummary.mLines} m-lines, codecs: ${c.remoteSdpSummary.codecs.join(', ')} <button class="copy-btn" data-copy-sdp="${c.id}:remote">Copy</button>` : '—'}</td></tr>
+        <tr><th>Local SDP</th><td>${c.localSdpSummary ? `${c.localSdpSummary.mLines} m-lines, codecs: ${escapeHtml(c.localSdpSummary.codecs.join(', '))} <button class="copy-btn" data-copy-sdp="${c.id}:local">Copy</button>` : '—'}</td></tr>
+        <tr><th>Remote SDP</th><td>${c.remoteSdpSummary ? `${c.remoteSdpSummary.mLines} m-lines, codecs: ${escapeHtml(c.remoteSdpSummary.codecs.join(', '))} <button class="copy-btn" data-copy-sdp="${c.id}:remote">Copy</button>` : '—'}</td></tr>
         <tr><th>ICE candidates</th><td>local: ${c.localCandidateTypes.join(', ') || '—'} / remote: ${c.remoteCandidateTypes.join(', ') || '—'}</td></tr>
       </table>
     </div>
