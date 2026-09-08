@@ -120,6 +120,8 @@ module.exports = [
         fetch: 'readonly',
         XMLHttpRequest: 'readonly',
         Event: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
       },
     },
     rules: {
