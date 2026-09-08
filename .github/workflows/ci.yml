@@ -22,6 +22,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - name: Guard LiveKit nightly job triggers
+        run: node scripts/check-nightly-triggers.js
 
   test:
     name: Test (chromium + media specs on firefox/webkit)

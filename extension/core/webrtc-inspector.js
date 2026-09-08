@@ -1907,11 +1907,21 @@ self.onrtctransform = (ev) => {
 
   // ---- injection controls -----------------------------------------------
 
-  function replaceOutgoingTrack(connectionId, kind, track) {
+  // trackId disambiguates which same-kind sender to target when a
+  // connection carries more than one (e.g. camera + screen-share both
+  // publishing video) — omit it to keep the original first-match-by-kind
+  // behavior for the common single-sender-per-kind case.
+  function findSenderByKind(record, kind, trackId) {
+    return record.pc.getSenders().find(
+      (s) => s.track && s.track.kind === kind && (!trackId || s.track.id === trackId)
+    );
+  }
+
+  function replaceOutgoingTrack(connectionId, kind, track, trackId) {
     const record = connectionsById.get(connectionId);
     if (!record) throw new Error(`No connection with id ${connectionId}`);
-    const sender = record.pc.getSenders().find((s) => s.track && s.track.kind === kind);
-    if (!sender) throw new Error(`No active ${kind} sender on connection ${connectionId}`);
+    const sender = findSenderByKind(record, kind, trackId);
+    if (!sender) throw new Error(`No active ${kind} sender${trackId ? ` for track ${trackId}` : ''} on connection ${connectionId}`);
     return sender.replaceTrack(track);
   }
 
@@ -1932,11 +1942,11 @@ self.onrtctransform = (ev) => {
   // back via setParameters() — no interception needed, real congestion
   // control still runs but is capped by whatever's passed here. Only the
   // fields present in caps are touched; omit a field to leave it as-is.
-  function capEncoding(connectionId, kind, caps) {
+  function capEncoding(connectionId, kind, caps, trackId) {
     const record = connectionsById.get(connectionId);
     if (!record) throw new Error(`No connection with id ${connectionId}`);
-    const sender = record.pc.getSenders().find((s) => s.track && s.track.kind === kind);
-    if (!sender) throw new Error(`No active ${kind} sender on connection ${connectionId}`);
+    const sender = findSenderByKind(record, kind, trackId);
+    if (!sender) throw new Error(`No active ${kind} sender${trackId ? ` for track ${trackId}` : ''} on connection ${connectionId}`);
     const run = () => {
       const params = sender.getParameters();
       if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];

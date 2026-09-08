@@ -84,7 +84,14 @@ module.exports = [
     // Spec files mix Node (test/expect, require) and browser (page.evaluate
     // callback bodies) globals in the same file — ESLint can't tell which
     // scope a given `window` reference is in, so both are allowed here.
-    files: ['test/specs/**/*.js', 'test/helpers.js', 'playwright.config.js', 'eslint.config.js'],
+    files: [
+      'test/specs/**/*.js',
+      'test/helpers.js',
+      'playwright.config.js',
+      'eslint.config.js',
+      'test/livekit/**/*.js',
+      'playwright.livekit.config.js',
+    ],
     languageOptions: {
       ecmaVersion: 2021,
       sourceType: 'commonjs',
@@ -101,11 +108,13 @@ module.exports = [
         RTCPeerConnection: 'readonly',
         RTCRtpScriptTransform: 'readonly',
         MediaStream: 'readonly',
+        MediaStreamTrack: 'readonly',
         Worker: 'readonly',
         URL: 'readonly',
         Blob: 'readonly',
         self: 'readonly', // media-fault injector fns run inside the transform worker
         setTimeout: 'readonly',
+        clearTimeout: 'readonly',
         fetch: 'readonly',
         XMLHttpRequest: 'readonly',
         Event: 'readonly',

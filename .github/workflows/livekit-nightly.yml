@@ -1,0 +1,98 @@
+# Real-LiveKit E2E discovery job. See
+# ~/Downloads/webrtc-inspector-livekit-e2e-plan.md sections 2, 3, 6.
+#
+# This job is a discovery mechanism, not a regression gate: it must never
+# block a PR or a push to main. `scripts/check-nightly-triggers.js` (run from
+# ci.yml's lint job) fails CI if this file's trigger block ever grows a
+# `push` or `pull_request` key. Any future PR that changes the trigger block,
+# the bind address in test/livekit/server.js, or the devkey/secret pair
+# below is a security review, not a routine change.
+#
+# devkey/secret is LiveKit's own publicly documented --dev default
+# (docs.livekit.io/transport/self-hosting/local), not a leaked credential.
+# The server this job talks to only ever binds 127.0.0.1 — see
+# test/livekit/server.js. This workflow never carries a real LIVEKIT_URL or
+# API key, and never points at a shared/staging LiveKit deployment or
+# LiveKit Cloud.
+name: LiveKit E2E (nightly)
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: livekit-nightly
+  cancel-in-progress: false
+
+env:
+  LIVEKIT_VERSION: 1.13.6
+
+jobs:
+  test:
+    name: Real LiveKit E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Playwright (Chromium only)
+        run: npx playwright install --with-deps chromium
+
+      - name: Install livekit-server (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          asset="livekit_${LIVEKIT_VERSION}_linux_amd64.tar.gz"
+          base_url="https://github.com/livekit/livekit/releases/download/v${LIVEKIT_VERSION}"
+          curl -sSL -o "$asset" "${base_url}/${asset}"
+          curl -sSL -o checksums.txt "${base_url}/checksums.txt"
+          grep " ${asset}\$" checksums.txt | sha256sum -c -
+          tar xzf "$asset" livekit-server
+          sudo mv livekit-server /usr/local/bin/livekit-server
+          chmod +x /usr/local/bin/livekit-server
+          livekit-server --version
+
+      - name: Capture runner load
+        if: always()
+        run: |
+          echo "### Runner load" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          nproc >> "$GITHUB_STEP_SUMMARY"
+          uptime >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run real LiveKit E2E suite
+        run: npm run test:livekit
+
+      - name: Write step summary
+        if: always()
+        run: node test/report-summary.js
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: livekit-playwright-report
+          path: playwright-report/
+          retention-days: 14
+
+      # GitHub disables `schedule`-triggered workflows after 60 days with no
+      # repo activity. Re-enabling a workflow that isn't disabled still
+      # resets that clock, so this keeps the job alive as long as it fires
+      # at least once inside the window. See plan section 6.
+      - name: Keep scheduled workflow alive
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PUT "repos/${{ github.repository }}/actions/workflows/livekit-nightly.yml/enable"

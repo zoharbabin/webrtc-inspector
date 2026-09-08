@@ -183,17 +183,18 @@ function registerTools(server, cdpEndpoint) {
     server,
     cdpEndpoint,
     'wrtc_cap_encoding',
-    "Force an active sender's encoding params (getParameters()/mutate/setParameters()) — simulates a bandwidth-constrained encoder decision deterministically. Omit a field to leave it as-is.",
+    "Force an active sender's encoding params (getParameters()/mutate/setParameters()) — simulates a bandwidth-constrained encoder decision deterministically. Omit a field to leave it as-is. If the connection has more than one sender of `kind` (e.g. camera + screen-share both publishing video), pass `trackId` (from getSnapshot()'s localTracks[].trackId) to pick one; omitting it targets whichever sender getSenders() returns first.",
     {
       connId: z.number(),
       kind: z.enum(['audio', 'video']),
+      trackId: z.string().optional(),
       maxBitrate: z.number().optional(),
       maxFramerate: z.number().optional(),
       scaleResolutionDownBy: z.number().optional(),
       degradationPreference: z.enum(['maintain-framerate', 'maintain-resolution', 'balanced']).optional(),
     },
     'capEncoding',
-    ({ connId, kind, ...caps }) => [connId, kind, caps]
+    ({ connId, kind, trackId, ...caps }) => [connId, kind, caps, trackId]
   );
 
   registerSimpleTool(

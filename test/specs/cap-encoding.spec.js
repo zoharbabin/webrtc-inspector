@@ -150,6 +150,34 @@ test.describe('capEncoding()', () => {
     expect(result.encoding.maxFramerate).toBe(12);
   });
 
+  // Found via the real-LiveKit E2E suite (test/livekit/specs/capencoding-vs-abr.spec.js):
+  // with two same-kind senders on one connection (e.g. camera + screen-share),
+  // capEncoding had no way to pick which one — it always hit whichever
+  // getSenders() returned first, silently leaving the other untouched. The
+  // optional trackId disambiguator (from getSnapshot()'s localTracks[].trackId)
+  // fixes this; omitting it keeps the original first-match-by-kind behavior.
+  test('trackId disambiguates which same-kind sender to cap when a connection has two', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
+      const { connectionIdA } = await window.testHelpers.createLoopbackSession('cap-disambiguate', async (pcA) => {
+        const streamA = await navigator.mediaDevices.getUserMedia({ video: true });
+        const streamB = await navigator.mediaDevices.getUserMedia({ video: true });
+        pcA.addTrack(streamA.getVideoTracks()[0], streamA);
+        pcA.addTrack(streamB.getVideoTracks()[0], streamB);
+        window.__secondVideoTrackId = streamB.getVideoTracks()[0].id;
+      });
+      await window.__webrtcInspector.capEncoding(
+        connectionIdA, 'video', { maxBitrate: 150000 }, window.__secondVideoTrackId
+      );
+      const senders = window.__pcA.getSenders().filter((s) => s.track && s.track.kind === 'video');
+      return senders.map((s) => ({ trackId: s.track.id, maxBitrate: s.getParameters().encodings[0].maxBitrate }));
+    });
+    const targeted = result.find((s) => s.maxBitrate === 150000);
+    expect(targeted).toBeDefined();
+    const untouched = result.find((s) => s.trackId !== targeted.trackId);
+    expect(untouched.maxBitrate).not.toBe(150000);
+  });
+
   test('a capped bitrate keeps the connection healthy — real packets still flow', async ({ page }) => {
     const result = await page.evaluate(async () => {
       await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });

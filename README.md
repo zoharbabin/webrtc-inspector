@@ -125,8 +125,8 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` m
 | `getSdp(connId)` | `{local, remote}` full SDP. |
 | `getTrackDiagnostics(trackIds)` | Matches track ids (e.g. an element's `srcObject.getTracks()`) to a tracked local/remote track. Returns `{connectionId, kind, status, qualityScore, ...}`, `null` if no match. |
 | `getRemoteTrackStream(connId, trackId)` | Live `MediaStream` for one remote track. |
-| `replaceOutgoingTrack(connId, kind, track)` | Swap a sender's outgoing track. |
-| `capEncoding(connId, kind, {maxBitrate, maxFramerate, scaleResolutionDownBy, degradationPreference})` | Force encoding params via `getParameters()`/`setParameters()`. Omit a field to leave it. |
+| `replaceOutgoingTrack(connId, kind, track, trackId?)` | Swap a sender's outgoing track. `trackId` (from `getSnapshot()`'s `localTracks[].trackId`) picks which sender when a connection has more than one of `kind` (e.g. camera + screen-share); omitted, it targets whichever sender `getSenders()` returns first. |
+| `capEncoding(connId, kind, {maxBitrate, maxFramerate, scaleResolutionDownBy, degradationPreference}, trackId?)` | Force encoding params via `getParameters()`/`setParameters()`. Omit a caps field to leave it. Same `trackId` disambiguation as `replaceOutgoingTrack`. |
 | `setFakeMic(base64\|ArrayBuffer)` / `clearFakeMic()` | Route future `getUserMedia({audio:true})` to a synthetic source / restore real mic. |
 | `injectAudio(base64\|ArrayBuffer)` | `setFakeMic` + play immediately. |
 | `playIntoFakeMic()` | Replay the armed fake-mic buffer. |
