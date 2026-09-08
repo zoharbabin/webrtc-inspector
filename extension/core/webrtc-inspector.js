@@ -362,6 +362,10 @@
       const tag = trackTagById.get(ev.track);
       const trackRecord = {
         trackId: ev.track.id, kind: ev.track.kind, label: ev.track.label, sourceTag: tag ? tag.tag : null, status: 'live', level: null,
+        // Derived, never assigned directly: two independent writers feed it (the
+        // 2s stats poll decides 'track-not-rendered', the 250ms meter tick decides
+        // 'meter-failed'/'audio-context-not-rendering'). Assigning it from both made
+        // the poll clobber the meter's reason, leaving level null with no reason.
         levelUnavailableReason: null,
         freezeCount: null, totalFreezesDuration: null, freezeRatio: null, qualityFlag: null, addedAt: Date.now(),
       };
@@ -378,7 +382,7 @@
         try {
           meterRemoteAudioTrack(record, trackRecord, ev.track);
         } catch (err) {
-          trackRecord.levelUnavailableReason = 'meter-failed';
+          setMeterUnavailable(trackRecord, 'meter-failed');
           emit({ type: 'audio-meter-failed', connectionId: id, trackId: ev.track.id, error: String((err && err.message) || err) });
         }
       }
@@ -1333,6 +1337,24 @@ self.onrtctransform = (ev) => {
   // level to null, so a caller sampling early sees no audio on a healthy call.
   // Recovery is immediate in the other direction: one decoding poll clears it.
   const NOT_RENDERED_CONFIRM_POLLS = 2;
+
+  // levelUnavailableReason has two independent writers on different clocks, so
+  // each owns its own field and the public one is recomputed from both. A meter
+  // that cannot measure at all outranks "nothing is pulling the track": with no
+  // running AudioContext we don't know whether the track is rendered.
+  const notRenderedByTrackRecord = new WeakMap();
+  const meterUnavailableByTrackRecord = new WeakMap();
+  function recomputeLevelValidity(trackRecord) {
+    const reason = meterUnavailableByTrackRecord.get(trackRecord) || (notRenderedByTrackRecord.get(trackRecord) ? 'track-not-rendered' : null);
+    trackRecord.levelUnavailableReason = reason;
+    if (reason) trackRecord.level = null;
+  }
+  function setMeterUnavailable(trackRecord, reason) {
+    if (reason) meterUnavailableByTrackRecord.set(trackRecord, reason);
+    else meterUnavailableByTrackRecord.delete(trackRecord);
+    recomputeLevelValidity(trackRecord);
+  }
+
   function updateRemoteAudioMeterValidity(record, reports) {
     reports.forEach((report) => {
       if (report.type !== 'inbound-rtp' || report.kind !== 'audio' || !report.trackIdentifier) return;
@@ -1349,7 +1371,8 @@ self.onrtctransform = (ev) => {
       const decoding = samples > prev.samples;
       const flatPolls = receiving && !decoding ? prev.flatPolls + 1 : 0;
       audioMeterProbeByTrackRecord.set(trackRecord, { samples, packets, flatPolls });
-      trackRecord.levelUnavailableReason = flatPolls >= NOT_RENDERED_CONFIRM_POLLS ? 'track-not-rendered' : null;
+      notRenderedByTrackRecord.set(trackRecord, flatPolls >= NOT_RENDERED_CONFIRM_POLLS);
+      recomputeLevelValidity(trackRecord);
     });
   }
 
@@ -1431,8 +1454,38 @@ self.onrtctransform = (ev) => {
   }
 
   let meterCtx = null;
+  let meterCtxResumePending = false;
+  // Firefox with no audio output device returns a resume() promise that never
+  // settles, so calling this every tick would pile up one pending promise per
+  // levelIntervalMs for the whole call. Only one attempt is in flight at a
+  // time. That is also the correct retry policy: where resume() stays pending
+  // until a user gesture, the pending promise *is* the retry, and where it
+  // settles without starting the context (autoplay policy) the next tick tries
+  // again.
+  function resumeMeterCtx() {
+    if (meterCtx.state === 'running' || meterCtxResumePending) return;
+    meterCtxResumePending = true;
+    const done = () => { meterCtxResumePending = false; };
+    try {
+      const p = meterCtx.resume();
+      if (p && typeof p.then === 'function') p.then(done, done);
+      else done(); // pre-promise callback-style resume(): nothing to wait on
+    } catch (_) { done(); /* some builds throw instead of rejecting */ }
+  }
+
   function meterRemoteAudioTrack(record, trackRecord, track) {
     if (!meterCtx) meterCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // An AudioContext that is not rendering never pulls the graph, so the
+    // analyser keeps returning a flat 128 and the RMS comes out exactly 0.
+    // Reporting that as a level claims the far end is silent when the truth is
+    // that we cannot measure at all, which is the single worst thing this meter
+    // could get wrong. Headless Firefox and WebKit both start the context
+    // suspended, so this resume() is what makes any measurement possible, and
+    // on a machine with no audio device Firefox never leaves suspended at all.
+    // The tick below compares currentTime instead of only reading state, so a
+    // context whose clock is stopped, or one that stalls mid-call, is reported
+    // as unmeasurable rather than read as silence.
+    resumeMeterCtx();
     const source = meterCtx.createMediaStreamSource(new MediaStream([track]));
     const analyser = meterCtx.createAnalyser();
     analyser.fftSize = analyserWindowFor(meterCtx.sampleRate);
@@ -1448,8 +1501,21 @@ self.onrtctransform = (ev) => {
       try { source.disconnect(); } catch (_) { /* already disconnected */ }
       try { analyser.disconnect(); } catch (_) { /* already disconnected */ }
     };
+    let lastCtxTime = meterCtx.currentTime;
     const timer = setInterval(() => {
       if (record.closed || trackRecord.status === 'ended') { stop(); return; }
+      // The clock has to have moved since the previous tick for the analyser to
+      // hold anything new. Compared, not sampled once, so a context that stalls
+      // mid-call is caught too.
+      const rendering = meterCtx.state === 'running' && meterCtx.currentTime > lastCtxTime;
+      lastCtxTime = meterCtx.currentTime;
+      if (!rendering) {
+        setMeterUnavailable(trackRecord, 'audio-context-not-rendering');
+        resumeMeterCtx();
+        return;
+      }
+      // Clear only our own reason: 'meter-failed' means the graph was never built and no tick can fix it.
+      if (meterUnavailableByTrackRecord.get(trackRecord) === 'audio-context-not-rendering') setMeterUnavailable(trackRecord, null);
       if (trackRecord.levelUnavailableReason) { trackRecord.level = null; return; }
       analyser.getByteTimeDomainData(data);
       let sumSquares = 0;

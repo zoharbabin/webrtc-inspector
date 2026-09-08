@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { gotoFixture } = require('../helpers');
+const { gotoFixture, hasEncodedTransform } = require('../helpers');
 
 test.describe('Network-fault primitives', () => {
   test.beforeEach(async ({ page }) => {
@@ -229,6 +229,7 @@ test.describe('Network-fault primitives', () => {
   });
 
   test("simulateNetworkLoss with targets: ['media'] keeps a previously armed setMediaFaultInjector running after the outage", async ({ page }) => {
+    test.skip(!(await hasEncodedTransform(page)), 'this build has no RTCRtpScriptTransform, so there is no injector to keep running');
     const result = await page.evaluate(async () => {
       window.__reports = 0;
       window.__webrtcInspector.onEvent((e) => { if (e.type === 'media-fault-report') window.__reports++; });

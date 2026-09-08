@@ -153,7 +153,7 @@ Everything the inspector retains is capped, so a long-lived page or a reconnect 
 
 #### Media fault injection
 
-`setMediaFaultInjector` uses `RTCRtpScriptTransform` (Chrome 141+, Firefox 117+, Safari 15.4+), not Chromium's legacy `createEncodedStreams()`. On an older browser it throws on arm. Rules that follow from how browsers implement it:
+`setMediaFaultInjector` uses `RTCRtpScriptTransform` (Chrome 141+, Firefox 117+, Safari 15.4+), not Chromium's legacy `createEncodedStreams()`. It throws on arm where the API is missing, so feature-detect with `typeof window.RTCRtpScriptTransform === 'function'` rather than by browser name: Playwright's Linux WebKit build has no `RTCRtpScriptTransform` even though the same Playwright WebKit on macOS does. Rules that follow from how browsers implement it:
 
 - **Arm it before the connection is created.** Chromium only accepts a sender transform before `setLocalDescription` and a receiver transform inside the `track` event, and clearing a live transform stalls media. So coverage is decided when a `RTCPeerConnection` is constructed and never removed. `getSnapshot().connections[i].mediaFaultInjectable` tells you which connections are eligible, and `mediaFaultCoveredEndpoints` how many sender or receiver endpoints actually carry the transform right now. `0` on an eligible connection means no fault can reach the media path. Each endpoint that takes the transform emits a `media-transform-installed` event (`connectionId`, `kind`, `direction`); one that can't emits `media-transform-failed` with the reason. Arming while uncovered connections are open emits a `media-fault-injector-uncovered` event with their ids.
 - **Change or clear the fn any time on a covered connection.** `setMediaFaultInjector` again swaps the fn mid-call; `clearMediaFaultInjector()` switches the transform to pass-through. No renegotiation either way.
@@ -269,7 +269,16 @@ el.srcObject = new MediaStream([remoteTrack]);
 document.body.appendChild(el);
 ```
 
-Firefox and WebKit decode a remote audio track with no sink attached, so they report a real level either way. Detection is a stats delta (packets growing while `totalSamplesReceived` stays flat), so it needs two stats polls before the reason appears. Any other `null` level, with `levelUnavailableReason` also `null`, just means no sample yet.
+Firefox and WebKit decode a remote audio track with no sink attached, so they report a real level either way. Detection is a stats delta (packets growing while `totalSamplesReceived` stays flat), so it needs two stats polls before the reason appears.
+
+The other two reasons:
+
+| `levelUnavailableReason` | Meaning |
+| --- | --- |
+| `'audio-context-not-rendering'` | The meter's `AudioContext` clock did not advance between ticks, so the analyser holds flat silence no matter what arrives. Usually the context is suspended pending the page's first user gesture; on a machine with no audio output device (a container, a CI runner) headless Firefox stays suspended for good. Detected by comparing `currentTime` rather than reading `state`, so a stopped clock and a context that stalls mid-call are both caught. The meter retries `resume()` (one attempt in flight at a time) and clears the reason as soon as the clock moves. |
+| `'meter-failed'` | The analyser graph could not be built for this track at all. Paired with an `audio-meter-failed` event carrying the error. Never clears; the track has no meter for the life of the connection. |
+
+Any other `null` level, with `levelUnavailableReason` also `null`, just means no sample yet.
 
 ### `flags`
 

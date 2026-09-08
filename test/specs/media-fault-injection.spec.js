@@ -1,5 +1,7 @@
 const { test, expect } = require('@playwright/test');
-const { gotoFixture } = require('../helpers');
+const { gotoFixture, hasEncodedTransform } = require('../helpers');
+
+const NO_TRANSFORM = 'this build has no RTCRtpScriptTransform, so there is no encoded-frame API to test';
 
 // setMediaFaultInjector rides the standard RTCRtpScriptTransform: the injector
 // fn is serialized and runs in a Worker, so specs can't count calls through
@@ -29,6 +31,7 @@ const addVideo = `async (pcA) => {
 test.describe('setMediaFaultInjector() / clearMediaFaultInjector()', () => {
   test.beforeEach(async ({ page }) => {
     await gotoFixture(page);
+    test.skip(!(await hasEncodedTransform(page)), NO_TRANSFORM);
     await armReportCollector(page);
   });
 
@@ -282,6 +285,9 @@ test.describe('media path is untouched unless an injector is armed', () => {
         try { sender.createEncodedStreams(); legacyOnPlainPc = 'allowed'; } catch (err) { legacyOnPlainPc = err.name; }
       }
       return {
+        // A build without RTCRtpScriptTransform has no .transform attribute at
+        // all, so undefined is the untouched value there just as null is
+        // elsewhere. Either way we must not have set one.
         senderTransform: sender.transform,
         receiverTransform: receiver.transform,
         installedEvents: window.__webrtcInspector.getEvents().events.filter((e) => e.type === 'media-transform-installed').length,
@@ -289,14 +295,15 @@ test.describe('media path is untouched unless an injector is armed', () => {
         legacyOnPlainPc,
       };
     }, addVideo);
-    expect(result.senderTransform).toBeNull();
-    expect(result.receiverTransform).toBeNull();
+    expect(result.senderTransform).toBeFalsy(); // null where the attribute exists, undefined where it doesn't
+    expect(result.receiverTransform).toBeFalsy();
     expect(result.installedEvents).toBe(0);
     expect(result.injectable).toBe(false);
     expect(['InvalidStateError', 'unsupported']).toContain(result.legacyOnPlainPc);
   });
 
   test('the app can still use legacy createEncodedStreams() and standard sender.transform itself', async ({ page }) => {
+    test.skip(!(await hasEncodedTransform(page)), NO_TRANSFORM);
     const result = await page.evaluate(async () => {
       await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -327,6 +334,7 @@ test.describe('media path is untouched unless an injector is armed', () => {
   });
 
   test('arming while an uncovered connection is open emits media-fault-injector-uncovered; a legacy-flag connection is never covered', async ({ page }) => {
+    test.skip(!(await hasEncodedTransform(page)), NO_TRANSFORM);
     const result = await page.evaluate(async (addVideoSrc) => {
       await window.__webrtcInspector.setFakeCam({ width: 64, height: 48 });
       const { connectionIdA, connectionIdB } = await window.testHelpers.createLoopbackSession('pre-arm', eval(addVideoSrc));

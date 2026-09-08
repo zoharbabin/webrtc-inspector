@@ -21,4 +21,14 @@ const STATS_POLL_WAIT_MS = 8000;
 // no-stats flags) and then a poll to notice, so they need more room again.
 const ANOMALY_FLAG_WAIT_MS = 12000;
 
-module.exports = { gotoFixture, SILENT_WAV_BASE64, STATS_POLL_WAIT_MS, ANOMALY_FLAG_WAIT_MS };
+// setMediaFaultInjector needs the standard RTCRtpScriptTransform. Chromium,
+// Firefox and Safari all ship it, but Playwright's Linux WebKit build does not,
+// while the same Playwright WebKit on macOS does — so this is a per-machine
+// capability, not a per-engine one, and has to be probed at runtime rather than
+// keyed off browserName. Written as a probe so the specs light up on their own
+// the day the Linux build gains it.
+async function hasEncodedTransform(page) {
+  return page.evaluate(() => typeof window.RTCRtpScriptTransform === 'function');
+}
+
+module.exports = { gotoFixture, hasEncodedTransform, SILENT_WAV_BASE64, STATS_POLL_WAIT_MS, ANOMALY_FLAG_WAIT_MS };

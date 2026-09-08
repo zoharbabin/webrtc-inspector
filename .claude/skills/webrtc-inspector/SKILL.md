@@ -57,6 +57,8 @@ Each eval call is an isolated invocation — nothing local survives between call
 
 - `level: 0` — measured, and the audio really is silent.
 - `level: null` with `levelUnavailableReason: 'track-not-rendered'` — nothing measured. In Chromium the audio decoder only runs for a remote track the page is actually rendering, so with no `<audio>`/`<video>` sink the meter has nothing to read. Firefox and WebKit decode either way. This is a page setup fact, not an audio fault.
+- `level: null` with `levelUnavailableReason: 'audio-context-not-rendering'` — the meter's `AudioContext` clock isn't advancing, so it can't measure anything. Needs a user gesture in the page, or the machine has no audio output device driving it (a container, a CI runner). Says nothing about the audio itself.
+- `level: null` with `levelUnavailableReason: 'meter-failed'` — the analyser could not be built for this track. Look for the `audio-meter-failed` event and its error.
 - `level: null` with `levelUnavailableReason: null` — no sample taken yet; poll again.
 
 So don't report "no audio" off a null level. Confirm it against the stats instead: two `wrtc_get_snapshot` calls a few seconds apart, and check whether `packetsReceived` is growing. Packets growing while samples stay flat means the track arrives but nothing renders it.
