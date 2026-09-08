@@ -32,6 +32,10 @@
       // Legacy dual-PC negotiation path toggle (plan section 4, "topology"):
       // default true is livekit-client's own modern default.
       singlePeerConnection: options.singlePeerConnection !== false,
+      // { keyProvider, worker } built by the caller inside page context (a
+      // live ExternalE2EEKeyProvider + Worker can't cross page.evaluate's
+      // serialization boundary) — passed through untouched when present.
+      ...(options.e2ee ? { e2ee: options.e2ee } : {}),
     };
   }
 
