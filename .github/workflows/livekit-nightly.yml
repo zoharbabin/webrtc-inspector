@@ -32,14 +32,16 @@ jobs:
   test:
     name: Real LiveKit E2E
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Real runs finish in ~2 minutes; this leaves ample headroom for a slow
+    # runner without masking a genuine hang.
+    timeout-minutes: 15
     permissions:
       actions: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -80,7 +82,7 @@ jobs:
 
       - name: Upload HTML report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: livekit-playwright-report
           path: playwright-report/
