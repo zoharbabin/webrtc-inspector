@@ -2189,7 +2189,7 @@ self.onrtctransform = (ev) => {
   function exportBundle() {
     return {
       exportedAt: Date.now(),
-      version: '1.5.0',
+      version: '1.6.0',
       snapshot: getSnapshot({ detail: 'detailed' }),
       fullLog: log.slice(),
       statsHistory: Array.from(connectionsById.values()).map((r) => ({
@@ -2457,7 +2457,7 @@ self.onrtctransform = (ev) => {
   }
 
   window.__webrtcInspector = {
-    version: '1.5.0',
+    version: '1.6.0',
     getSnapshot,
     getSnapshotDiff,
     exportBundle,
