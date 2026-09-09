@@ -7,15 +7,17 @@
 [![Get the extension](https://img.shields.io/badge/Chrome%20Web%20Store-Get%20the%20extension-4285F4?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/webrtc-inspector/mkfhlnakkjdmoofccmabhmnplmlglngb)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A WebRTC debugging and fault-injection tool for any page, any SDK, no app changes needed.
+See what's really happening inside any WebRTC call, on any page, with any SDK, no app changes needed.
 
 It patches standard browser globals — `RTCPeerConnection`, `WebSocket`, `fetch`, `getUserMedia`, and more — before the page's own code can grab a reference. That gives you a live view of every connection, track, data channel, and signaling message, plus real fault injection to test reconnect logic.
 
-Use it as a Chrome extension, an MCP server for AI coding agents, an npm library, or a Playwright plugin.
+Use it as a Chrome extension, an MCP server for AI coding agents, an npm library, or a Playwright plugin. Pick whichever fits how you work — they all share the same core.
+
+![WebRTC Inspector DevTools panel showing two live peer connections, bitrate/RTT/jitter sparklines, SDP, and fault-injection controls](docs/images/devtools-panel.png)
 
 ## Quick start
 
-Three pieces, install what you need:
+Three pieces. Install just the one you need:
 
 **1. Chrome extension** — for a human watching DevTools.
 
@@ -44,9 +46,17 @@ Need Playwright or a one-off console paste instead? See the full method comparis
 
 ### Try it: have Claude QA a live WebRTC call, hands-off
 
-With the MCP server and Skill installed above, Claude can drive an end-to-end debugging session on its own — no human opening DevTools. It needs one more thing: a general-purpose browser-automation MCP (Playwright MCP, chrome-devtools-mcp, or similar) to click the page's own buttons. webrtc-inspector only inspects and fault-injects; it's not a page-automation tool. The two are complementary, not substitutes — one drives the page, the other watches the WebRTC layer underneath it.
+With the MCP server and Skill installed above, Claude can run an end-to-end debugging session on its own, no human opening DevTools. It needs one more thing: a general-purpose browser-automation MCP (Playwright MCP, chrome-devtools-mcp, or similar) to click the page's own buttons. webrtc-inspector only inspects and fault-injects; it's not a page-automation tool. The two are complementary: one drives the page, the other watches the WebRTC layer underneath it.
 
-**Point both MCPs at the same browser, or they'll watch nothing.** By default each self-launches its own separate Chromium — Playwright clicks around in one, while webrtc-inspector's snapshot/stats tools sit idle on a different, empty browser that never saw the real session. Give them one shared instance instead: launch Chrome yourself with `--remote-debugging-port=9222`, and set `WRTC_CDP_ENDPOINT=http://localhost:9222` for webrtc-inspector plus the matching `--cdp-endpoint`/attach flag for the other MCP. Same browser, same tab — one tool drives it, the other inspects it. Any webrtc-inspector tool call re-arms its instrumentation for new pages the other MCP opens, as long as webrtc-inspector's own MCP server stays connected for the session — which it does by default.
+**Point both MCPs at the same browser, or they'll watch nothing.** By default each one self-launches its own separate Chromium. Playwright clicks around in one, while webrtc-inspector's snapshot/stats tools sit idle on a different, empty browser that never saw the real session.
+
+Give them one shared instance instead:
+
+1. Launch Chrome yourself with `--remote-debugging-port=9222`.
+2. Set `WRTC_CDP_ENDPOINT=http://localhost:9222` for webrtc-inspector.
+3. Set the matching `--cdp-endpoint`/attach flag for the other MCP.
+
+Same browser, same tab: one tool drives it, the other inspects it. Any webrtc-inspector tool call re-arms its instrumentation for new pages the other MCP opens, as long as webrtc-inspector's own MCP server stays connected for the session, which it does by default.
 
 Point it at the public [pc1 sample](https://webrtc.github.io/samples/src/content/peerconnection/pc1/) and ask:
 
@@ -64,6 +74,8 @@ What actually happens, no human involved:
 Swap step 4 for `wrtc_restart_ice` (renegotiate without tearing down) or `wrtc_simulate_network_loss` (drop packets without killing the connection) to probe different recovery paths on your own app.
 
 ## What it patches
+
+Every one of these is instrumented, so anything the page does through them shows up in the inspector automatically:
 
 - `RTCPeerConnection` — tracks, transceivers, SDP, ICE, data channels
 - `RTCDataChannel.send`
@@ -100,6 +112,8 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` m
 
 ## DevTools panel
 
+What you get once the panel is open, screenshot above:
+
 - **Sparklines** — live bitrate/RTT/jitter/loss per connection, from each 1s `getSnapshot()` poll.
 - **Copy buttons** — next to SDP, each data-channel/WebSocket message, and each log entry. Copies JSON to clipboard.
 - **Timeline** — per-connection/-WebSocket open/close/error lifecycle, from the same log timestamps.
@@ -112,6 +126,8 @@ MCP-style Playwright tools that only expose post-navigation `browser_evaluate` m
 - **Per-site adapters** — `extension/adapters.js`: `{match(hostname, href), labeler?, decoders?}`, auto-selected by hostname. Add an entry to `ADAPTERS`, or set `window.__webrtcInspectorAdapters` to override the built-in list.
 
 ## API — `window.__webrtcInspector`
+
+The full surface, whether you're calling it from the console, a Playwright script, or through the MCP tools below.
 
 | Method | Does |
 |---|---|
@@ -374,6 +390,8 @@ Pushes per-connection `qualityScore`, `bitrateKbps`, `rttMs`, `jitterMs`, `lossP
 
 ## Known limitations
 
+Nothing here is hidden until it bites you:
+
 - **`setMediaFaultInjector` covers only connections created while it is armed** — a browser constraint of `RTCRtpScriptTransform` (see [Media fault injection](#media-fault-injection)). For a mid-call media outage use `simulateNetworkLoss({targets: ['media']})`, which needs no transform.
 - **Decoded payloads aren't redacted** — `registerDecoder` output is size-capped but not scrubbed. Redaction is the caller's responsibility.
 - **SFU app-message channels** — some SFU transports route control-plane messages over `WebSocket` instead of `RTCDataChannel`. Covered here since `WebSocket` is patched.
@@ -384,7 +402,11 @@ Pushes per-connection `qualityScore`, `bitrateKbps`, `rttMs`, `jitterMs`, `lossP
 
 Tracked as issues: https://github.com/zoharbabin/webrtc-inspector/issues
 
+Found a bug, or have an idea? Open an issue, bug reports and feature requests are both welcome.
+
 ## Testing
+
+Want to change something? Here's the whole loop:
 
 ```sh
 npm install
