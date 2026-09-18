@@ -30,6 +30,8 @@ These MCPs track one "current tab" pointer — an eval tool always runs against 
 
 Each eval call is an isolated invocation — nothing local survives between calls. For a before/after workflow (e.g. `captureEvents()` then `diffCaptures(before, after)`), stash the intermediate result on a page global in one call (`window.__before = window.__webrtcInspector.captureEvents();`) and read it back in the next.
 
+**Running several Claude Code sessions in parallel, each with its own Playwright MCP:** Playwright's browser extension already isolates them — every `--extension` connection is a separate client, and the extension groups each client's tabs into its own named, colored Chrome tab group; a tab belongs to one client's group at a time, and `browser_tabs({action: 'list'})` from this session's connection only ever returns tabs in this session's group. So the steps above already run against an already-isolated tab set; there's no need to tag or namespace anything across sessions. On first use the extension prompts the user to assign a tab into the new session's group — if `browser_tabs list` comes back empty, that's the tell (no tab assigned yet), not a broken connection. If a task doesn't need the real signed-in profile, skip the sharing question entirely by having that session's Playwright MCP self-launch its own Chromium instead (drop `--extension`) — a fully separate browser, nothing to isolate.
+
 If `wrtc_status` and the eval check disagree, e.g. `wrtc_status` reports `self-launched` but the eval confirms the extension is live on the user's real page, trust the eval check. That's the browser the task actually cares about; the self-launched Chromium is an empty, irrelevant fallback and can be ignored.
 
 ## Recipes
