@@ -7,30 +7,26 @@ Full API reference, tool list, and fault-injection table: this package's README.
 
 ## Setup
 
-Call `wrtc_status` first, every session. It never throws. Read `mode`:
+Call `wrtc_status` first, every session. It never throws.
 
-- `self-launched` or `attached` + `inspectorLoaded: true` — ready, proceed.
-- `attached` + `inspectorLoaded: false` — connected to a real Chrome but the current tab isn't the target page. Call `wrtc_navigate({url})` to open/instrument the right one.
-- `disconnected` — nothing reachable yet. No action needed: the next tool call (e.g. `wrtc_navigate`) self-launches a Chromium automatically. No human needs to start Chrome first.
+1. `mode: 'attached'` + `inspectorLoaded: true` → ready. Use the `wrtc_*` tools normally; skip the rest of this section.
+2. `mode: 'attached'` + `inspectorLoaded: false` → connected to a real Chrome, but the current tab isn't the target page. Call `wrtc_navigate({url})`.
+3. Anything else (`disconnected`, `self-launched`, or a page it can't navigate to) → **do not assume a fresh Chromium is the answer yet.** Check first whether a different browser-automation MCP (Playwright, chrome-devtools-mcp, browser-tools, etc.) is already connected in this session. If one is, skip straight to "Already-open Chrome via another MCP" below — that tool is almost certainly already driving the browser that actually matters, the user's real, already-open Chrome.
+4. Only when no other browser-automation MCP is connected at all: `disconnected`/`self-launched` is the normal, expected state. The next `wrtc_*` call (e.g. `wrtc_navigate`) self-launches a throwaway Chromium automatically — no human needs to start Chrome first, and no CDP flag or relaunch is needed either.
 
-Don't call `wrtc_get_snapshot` or any other tool before `wrtc_status` — it's the only tool guaranteed not to error, so it's the correct first probe every time.
+Never tell the user to quit or relaunch their real Chrome with `--remote-debugging-port`. Chrome blocks remote debugging on a default, signed-in profile by design — relaunching with the flag will not open the port, it only costs them their open tabs for nothing. `disconnected` means "nothing for the `wrtc_*` tools to attach to right now," not "impossible."
 
-### Pairing with a browser-automation MCP (Playwright, chrome-devtools-mcp, etc.)
+### Already-open Chrome via another MCP
 
-webrtc-inspector has no click/type/navigate-a-UI tool — it's inspection and fault-injection only. Driving real page interaction (clicking through a consent flow, a "Start call" button, etc.) needs a separate browser-automation MCP alongside it. They're complementary: one drives the page, the other watches the WebRTC layer. **They must share one browser, not each launch their own** — left alone, each MCP self-launches its own separate Chromium, and `wrtc_get_snapshot`/`wrtc_status` end up watching an unrelated, empty browser that never saw the real session. If a snapshot looks empty or stale while a call is clearly running, check `wrtc_status`'s `mode` first — it's almost always this.
+webrtc-inspector has no click/type/navigate-a-UI tool, it's inspection and fault-injection only. A task that needs both driving the page (a "Start call" button, a consent flow) and inspecting WebRTC pairs it with a browser-automation MCP that's already connected. Once one is, don't try to work out how it's wired to the browser (CDP attach vs. an extension relay) — that distinction doesn't matter for what comes next. Check the one thing that does:
 
-The automation MCP is wired one of two ways. Check which before picking a fix:
+1. Use that MCP's own JS-eval tool (e.g. Playwright MCP's `browser_evaluate`) to run `!!window.__webrtcInspector` on the page it's already on.
+2. **True** → that exact page is already instrumented. From here on, call `window.__webrtcInspector.<method>(...)` through that same eval tool for every operation — `getSnapshot()`, `killConnection(connId)`, `restartIce(connId)`, `simulateNetworkLoss(...)`, etc. (full API: `extension/core/webrtc-inspector.js`'s public surface, the same methods the `wrtc_*` tools wrap). This is the answer whether the other MCP got there via CDP or an extension relay — you never need to know which.
+3. **False** → the extension isn't loaded on that page. Ask the user to install it in that Chrome (Chrome Web Store, or an unpacked load of `extension/`). Don't try to route around this with CDP flags or a separate browser instance.
 
-- **CDP attach/self-launch** (e.g. Playwright MCP with `--browser chromium`, or an explicit `--cdp-endpoint`): it exposes a real CDP debugging port.
-- **Browser-extension relay** (e.g. Playwright MCP with `--extension --browser chrome`): it drives the user's real, already-open Chrome through an installed extension's WebSocket relay. **No CDP port is exposed in this mode** — there is nothing for webrtc-inspector to attach to.
+Each eval call is an isolated invocation — nothing local survives between calls. For a before/after workflow (e.g. `captureEvents()` then `diffCaptures(before, after)`), stash the intermediate result on a page global in one call (`window.__before = window.__webrtcInspector.captureEvents();`) and read it back in the next.
 
-**Mode 1 — CDP attach shared, use the `wrtc_*` tools normally.** Launch one Chrome with a fixed CDP port (e.g. `--remote-debugging-port=9222`), point both MCPs at it: `WRTC_CDP_ENDPOINT=http://localhost:9222` for webrtc-inspector, the matching `--cdp-endpoint`/attach flag for the other tool. Any webrtc-inspector tool call — `wrtc_status` included, no need to call `wrtc_navigate` first — re-arms instrumentation for new pages on the shared browser. This holds only while webrtc-inspector's MCP server process stays connected: instrumentation isn't stored durably on the browser, it's re-applied by the connected client each time a new page opens. Since MCP servers run for the whole session, this just works in practice. Confirms itself: `wrtc_status` returns `mode: 'attached'` with `pageUrl` matching the page the automation tool is actually on.
-
-**Mode 2 — extension relay, skip the `wrtc_*` tools and call the in-page API directly.** webrtc-inspector's MCP server has no CDP port to reach here — pointed at the default `localhost:9222` with nothing listening there, it silently self-launches its own disconnected Chromium, and `wrtc_*` tool calls inspect the wrong browser. This is a dead end no matter how the endpoint env var is tweaked. Instead, rely on the fact that the webrtc-inspector Chrome extension, if installed in that same real Chrome, auto-injects on every page and exposes `window.__webrtcInspector` (same methods the `wrtc_*` tools wrap: `getSnapshot`, `killConnection`, `restartIce`, `simulateNetworkLoss`, etc. — see `extension/core/webrtc-inspector.js`'s public API for the full list). Call it through the automation tool's own JS-eval (e.g. Playwright MCP's `browser_evaluate`) on the exact tab it's already driving. Requires the webrtc-inspector *extension* to be installed in the user's real Chrome — if it isn't, ask the user to install it (Chrome Web Store or an unpacked load of `extension/`) rather than trying to work around the gap.
-
-Each eval call is an isolated invocation — nothing local survives between calls. For a before/after workflow (e.g. `captureEvents()` then `diffCaptures(before, after)`), stash the intermediate result on a page global (`window.__before = window.__webrtcInspector.captureEvents();`) in one call and read it back in the next, rather than assuming a return value carries over.
-
-**Telling them apart without prior knowledge:** call `wrtc_status`. `mode: 'attached'` with a `pageUrl` that matches what the automation tool is doing confirms Mode 1 is wired correctly — proceed with `wrtc_*` tools. `mode: 'self-launched'` means the default CDP endpoint had nothing listening — that's the tell you're in Mode 2 (or nothing is configured at all): switch to calling `window.__webrtcInspector` via the automation tool's eval instead of retrying `wrtc_*` tools against a browser that will never see the real session.
+If `wrtc_status` and the eval check disagree, e.g. `wrtc_status` reports `self-launched` but the eval confirms the extension is live on the user's real page, trust the eval check. That's the browser the task actually cares about; the self-launched Chromium is an empty, irrelevant fallback and can be ignored.
 
 ## Recipes
 
